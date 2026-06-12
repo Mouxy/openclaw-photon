@@ -90,7 +90,7 @@
             "type": "boolean"
           },
           "mentionNames": {
-            "default": ["Ambrósio", "Ambrosio", "OpenClaw"],
+            "default": ["OpenClaw", "Assistant"],
             "description": "Mention or wake names recognised in group chats.",
             "type": "array",
             "items": { "type": "string" }

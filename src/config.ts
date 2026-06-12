@@ -50,7 +50,7 @@ const PhotonAccountSchema = z
     groupPolicy: z.enum(["allowlist", "open", "disabled"]).optional().default("allowlist"),
     groupAllowFrom: z.array(z.union([z.string(), z.number()])).optional().default([]),
     requireMention: z.boolean().optional().default(true),
-    mentionNames: z.array(z.string()).optional().default(["Ambrósio", "Ambrosio", "OpenClaw"]),
+    mentionNames: z.array(z.string()).optional().default(["OpenClaw", "Assistant"]),
     textChunkLimit: z.number().int().positive().optional().default(4000),
     maxInboundAttachmentBytes: z.number().int().positive().optional().default(20 * 1024 * 1024),
     maxOutboundAttachmentBytes: z.number().int().positive().optional().default(50 * 1024 * 1024),

@@ -10,7 +10,7 @@ import {
 test("normalizes a text message", () => {
   const account = {
     accountId: "default",
-    mentionNames: ["Ambrósio"],
+    mentionNames: ["Assistant"],
   };
   const space = {
     id: "chat-1",
@@ -36,7 +36,7 @@ test("normalizes a text message", () => {
 test("detects configured mentions in groups", () => {
   const account = {
     accountId: "default",
-    mentionNames: ["Ambrósio"],
+    mentionNames: ["Assistant"],
   };
   const result = normalizePhotonInbound({
     account,
@@ -46,7 +46,7 @@ test("detects configured mentions in groups", () => {
       platform: "iMessage",
       direction: "inbound",
       sender: { id: "user" },
-      content: { type: "text", text: "@Ambrosio can you see this?" },
+      content: { type: "text", text: "@Assistant can you see this?" },
       timestamp: new Date("2026-06-11T19:20:00Z"),
     },
   });
@@ -57,7 +57,7 @@ test("detects configured mentions in groups", () => {
 test("keeps attachment-only inbound messages visible to the agent", () => {
   const account = {
     accountId: "default",
-    mentionNames: ["Ambrósio"],
+    mentionNames: ["Assistant"],
   };
   const result = normalizePhotonInbound({
     account,
@@ -92,7 +92,7 @@ test("normalizes reactions as agent-visible inbound messages", () => {
   const result = normalizePhotonInbound({
     account: {
       accountId: "default",
-      mentionNames: ["Ambrósio"],
+      mentionNames: ["Assistant"],
     },
     space: { id: "chat-4", type: "dm", __platform: "iMessage" },
     message: {
@@ -111,7 +111,7 @@ test("normalizes reactions as agent-visible inbound messages", () => {
 test("normalizes richer native iMessage content", () => {
   const account = {
     accountId: "default",
-    mentionNames: ["Ambrósio"],
+    mentionNames: ["Assistant"],
   };
   const base = {
     platform: "iMessage",
@@ -172,12 +172,12 @@ test("normalizes richer native iMessage content", () => {
 
 test("cleans a leading group wake word while preserving ordinary text", () => {
   assert.equal(
-    cleanLeadingMention("@Ambrosio, can you see this?", ["Ambrósio"]),
+    cleanLeadingMention("@Assistant, can you see this?", ["Assistant"]),
     "can you see this?",
   );
   assert.equal(
-    cleanLeadingMention("please ask Ambrosio later", ["Ambrósio"]),
-    "please ask Ambrosio later",
+    cleanLeadingMention("please ask Assistant later", ["Assistant"]),
+    "please ask Assistant later",
   );
 });
 

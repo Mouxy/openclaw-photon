@@ -18,7 +18,7 @@ OpenClaw's channel runtime.
       "groupPolicy": "allowlist",
       "groupAllowFrom": [],
       "requireMention": true,
-      "mentionNames": ["Ambrósio", "Ambrosio", "OpenClaw"],
+      "mentionNames": ["OpenClaw", "Assistant"],
       "sendReadReceipts": true,
       "dispatchControlEvents": false,
       "maxInboundAttachmentBytes": 20971520,
@@ -56,7 +56,7 @@ The intended production profile is cloud iMessage through Photon/Spectrum:
       "groupPolicy": "allowlist",
       "groupAllowFrom": ["<cached-spectrum-group-space-id>"],
       "requireMention": true,
-      "mentionNames": ["Ambrósio", "Ambrosio", "OpenClaw"],
+      "mentionNames": ["OpenClaw", "Assistant"],
       "sendReadReceipts": true,
       "dispatchControlEvents": false,
       "nativeActions": true,
@@ -213,7 +213,7 @@ iMessage like a plain-text bot channel.
 - Noisy lightweight control events such as typing and poll votes are recognised
   but do not trigger a fresh agent turn unless `dispatchControlEvents=true`.
 - In group chats with `requireMention=true`, a leading wake word is stripped
-  before the prompt reaches the agent, so `@Ambrosio, check this` becomes
+  before the prompt reaches the agent, so `@Assistant, check this` becomes
   `check this`.
 
 ## Native iMessage Actions
