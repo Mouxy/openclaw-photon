@@ -1,0 +1,195 @@
+{
+  "id": "photon",
+  "name": "Photon",
+  "description": "Photon Spectrum channel plugin for OpenClaw",
+  "version": "0.1.0",
+  "channels": ["photon"],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": true
+  },
+  "channelConfigs": {
+    "photon": {
+      "schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "default": true,
+            "description": "Enable the Photon channel account.",
+            "type": "boolean"
+          },
+          "provider": {
+            "default": "imessage",
+            "description": "Spectrum provider to use. Production uses remote iMessage.",
+            "type": "string",
+            "enum": ["imessage", "terminal"]
+          },
+          "projectId": { "type": "string" },
+          "projectSecret": {
+            "type": "string",
+            "format": "password",
+            "description": "Photon project secret. Prefer projectSecretEnv instead of committing inline secrets."
+          },
+          "projectIdEnv": {
+            "default": "PHOTON_PROJECT_ID",
+            "description": "Environment variable that holds the Photon project id.",
+            "type": "string"
+          },
+          "projectSecretEnv": {
+            "default": "PHOTON_PROJECT_SECRET",
+            "description": "Environment variable that holds the Photon project secret.",
+            "type": "string"
+          },
+          "local": {
+            "default": false,
+            "description": "Use local iMessage mode. Production default is remote Photon/Spectrum.",
+            "type": "boolean"
+          },
+          "telemetry": {
+            "default": false,
+            "description": "Enable Photon/Spectrum telemetry when supported.",
+            "type": "boolean"
+          },
+          "flattenGroups": {
+            "default": true,
+            "description": "Flatten group metadata into OpenClaw inbound message context.",
+            "type": "boolean"
+          },
+          "dmPolicy": {
+            "default": "pairing",
+            "description": "Direct-message trust policy. Pairing challenges new senders by default.",
+            "type": "string",
+            "enum": ["pairing", "allowlist", "open", "disabled"]
+          },
+          "allowFrom": {
+            "default": [],
+            "description": "Allowed DM sender ids for allowlist/pairing-approved direct messages.",
+            "type": "array",
+            "items": {
+              "anyOf": [{ "type": "string" }, { "type": "number" }]
+            }
+          },
+          "groupPolicy": {
+            "default": "allowlist",
+            "description": "Group trust policy. Allowlist blocks groups unless their Spectrum space id is in groupAllowFrom.",
+            "type": "string",
+            "enum": ["open", "disabled", "allowlist"]
+          },
+          "groupAllowFrom": {
+            "default": [],
+            "description": "Allowed cached Spectrum group space ids. Empty with groupPolicy=allowlist blocks all groups.",
+            "type": "array",
+            "items": {
+              "anyOf": [{ "type": "string" }, { "type": "number" }]
+            }
+          },
+          "requireMention": {
+            "default": true,
+            "description": "Require a configured mention/wake word before accepted group messages reach the agent.",
+            "type": "boolean"
+          },
+          "mentionNames": {
+            "default": ["Ambrósio", "Ambrosio", "OpenClaw"],
+            "description": "Mention or wake names recognised in group chats.",
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "textChunkLimit": {
+            "default": 4000,
+            "description": "Maximum text characters sent in a single Photon outbound chunk.",
+            "type": "integer",
+            "exclusiveMinimum": 0
+          },
+          "maxInboundAttachmentBytes": {
+            "default": 20971520,
+            "description": "Maximum inbound attachment bytes cached into OpenClaw media storage. Default is 20 MiB.",
+            "type": "integer",
+            "exclusiveMinimum": 0
+          },
+          "maxOutboundAttachmentBytes": {
+            "default": 52428800,
+            "description": "Maximum local outbound file or buffer bytes accepted before Spectrum handoff. Default is 50 MiB.",
+            "type": "integer",
+            "exclusiveMinimum": 0
+          },
+          "sendReadReceipts": {
+            "default": true,
+            "description": "Mark accepted inbound iMessages read best-effort in remote iMessage mode.",
+            "type": "boolean"
+          },
+          "dispatchControlEvents": {
+            "default": false,
+            "description": "Dispatch tapbacks, unsends, typing, poll votes, and similar controls into agent turns.",
+            "type": "boolean"
+          },
+          "nativeActions": {
+            "default": true,
+            "description": "Expose Spectrum/iMessage-native actions, including effects, through OpenClaw message actions.",
+            "type": "boolean"
+          },
+          "dangerousNativeActions": {
+            "default": false,
+            "description": "Allow disruptive group/background/mini-app actions for non-owners. False keeps them owner-gated.",
+            "type": "boolean"
+          },
+          "miniAppDefaults": {
+            "default": {},
+            "description": "Reusable iMessage extension metadata for direct-chat mini-app cards. Use real app/team/bundle/url values only.",
+            "type": "object",
+            "properties": {
+              "appName": {
+                "description": "Visible app name for the iMessage mini-app card.",
+                "type": "string"
+              },
+              "appStoreId": {
+                "description": "Optional App Store id for the iMessage app.",
+                "type": "integer",
+                "exclusiveMinimum": 0
+              },
+              "extensionBundleId": {
+                "description": "iMessage extension bundle id, for example com.example.MessagesExtension.",
+                "type": "string"
+              },
+              "teamId": {
+                "description": "Apple developer team id for the iMessage extension.",
+                "type": "string"
+              },
+              "url": {
+                "description": "URL opened by the iMessage mini-app payload.",
+                "type": "string"
+              },
+              "caption": {
+                "description": "Primary visible card text.",
+                "type": "string"
+              },
+              "subcaption": {
+                "description": "Secondary visible card text.",
+                "type": "string"
+              },
+              "trailingCaption": {
+                "description": "Optional trailing primary card text.",
+                "type": "string"
+              },
+              "trailingSubcaption": {
+                "description": "Optional trailing secondary card text.",
+                "type": "string"
+              },
+              "summary": {
+                "description": "Fallback summary text.",
+                "type": "string"
+              }
+            },
+            "additionalProperties": true
+          },
+          "accounts": {
+            "description": "Optional per-account Photon channel configs keyed by account id.",
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "additionalProperties": true
+      }
+    }
+  }
+}
