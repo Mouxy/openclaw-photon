@@ -20,6 +20,7 @@ OpenClaw's channel runtime.
       "requireMention": true,
       "mentionNames": ["OpenClaw", "Assistant"],
       "sendReadReceipts": true,
+      "typingIndicators": true,
       "dispatchControlEvents": false,
       "maxInboundAttachmentBytes": 20971520,
       "maxOutboundAttachmentBytes": 52428800,
@@ -29,7 +30,7 @@ OpenClaw's channel runtime.
         "appName": "Example",
         "teamId": "TEAMID1234",
         "extensionBundleId": "com.example.messages.extension",
-        "url": "https://example.com/imessage",
+        "url": "https://example.com/imessage?id={{runId}}&phase={{phase}}",
         "caption": "Example",
         "subcaption": "Open in Messages",
         "summary": "Example mini-app card"
@@ -58,6 +59,7 @@ The intended production profile is cloud iMessage through Photon/Spectrum:
       "requireMention": true,
       "mentionNames": ["OpenClaw", "Assistant"],
       "sendReadReceipts": true,
+      "typingIndicators": true,
       "dispatchControlEvents": false,
       "nativeActions": true,
       "dangerousNativeActions": false,
@@ -85,6 +87,10 @@ agent:
   chats; sending a mini-app card into a group remains owner-gated.
 - `sendReadReceipts=true` marks accepted inbound iMessages read best-effort in
   remote iMessage mode. Local mode does not send read receipts.
+- `typingIndicators=true` refreshes the iMessage typing indicator about every 10
+  seconds while long-running accepted messages are processed. It suppresses
+  visible tool/progress chatter so the chat only gets the final reply.
+  `progressUpdates` remains a backwards-compatible alias for older configs.
 - `dispatchControlEvents=false` records noisy lightweight controls such as
   typing and poll votes without starting a fresh agent turn. Tapbacks and
   unsends are surfaced as normal inbound context because they are deliberate
@@ -96,6 +102,8 @@ agent:
   not use effects by default.
 - `miniAppDefaults` is optional. Use it only when you have real iMessage app
   extension metadata you want Photon to reuse for direct-chat mini-app cards.
+  String fields can include `{{runId}}`, `{{phase}}`, `{{step}}`, `{{result}}`,
+  or any matching action parameter. URL placeholders are percent-encoded.
 - `groupPolicy="allowlist"` means groups are blocked unless their cached
   Spectrum group space id is listed in `groupAllowFrom`. With the production
   default `groupAllowFrom=[]`, all group chats are blocked until explicitly
@@ -163,6 +171,22 @@ Use the terminal provider to prove OpenClaw routing before iMessage auth:
 - Inbound message ids are deduped in-memory for at-least-once stream replay.
 - If the Spectrum message stream ends or throws, the channel re-subscribes with
   capped exponential backoff.
+- Remote iMessage stream resilience mostly lives inside `spectrum-ts`. Keep the
+  dependency current because recent versions add cursor-based catch-up, live
+  buffering during catch-up, event dedupe, capped jittered reconnect, and
+  persistent-failure escalation.
+- Spectrum's internal `[spectrum.stream]` reconnect logs do not currently
+  update Photon persisted runtime status, so `openclaw channels status --probe`
+  can still be green during an internal stream reconnect storm. On Daniel's
+  Mac, `scripts/photon-stream-watchdog.sh` watches the gateway log and restarts
+  the gateway only after repeated or persistent stream degradation.
+- Treat a single `[spectrum.stream] stream interrupted; reconnecting` line as
+  degraded, not fatal. Treat repeated lines in a short window, persistent
+  failure logs, fresh `PERMISSION_DENIED`, or fresh `Target not allowed` as
+  actionable.
+- Do not blindly retry outbound remote iMessage sends after ambiguous transport
+  failures; Spectrum/iMessage does not expose a clear outbound idempotency key,
+  so retries can duplicate visible messages.
 - `openclaw channels status --probe` includes Photon runtime status when the
   gateway asks the plugin to probe the account.
 - `message(action=photonDoctor, channel=photon)` returns a JSON diagnostic with
@@ -241,6 +265,9 @@ Photon exposes Spectrum/iMessage-native behaviour through OpenClaw's shared
   `appStoreId`, and visible layout fields such as `caption`/`subcaption`.
   Set `miniAppDefaults` in config to avoid passing those identifiers every
   time. Group mini-app sends are owner-gated by default.
+- `sendStatusCard` / `status-card` sends an opinionated OpenClaw status mini-app
+  card using configured `miniAppDefaults`. It accepts `phase`/`status` values
+  such as `done`, `needsInput`, or `problem`, plus `runId`, `step`, and `result`.
 - `upload-file` sends one or more validated media paths/URLs, or a base64
   buffer, as an attachment or voice message.
 - `renameGroup` and `setGroupIcon` use Spectrum `space.rename(...)` and

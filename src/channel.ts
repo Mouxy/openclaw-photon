@@ -207,8 +207,9 @@ export const photonPlugin = {
     probeAccount: async ({ accountId }: any = {}) => {
       const resolvedAccountId = accountId ?? DEFAULT_ACCOUNT_ID;
       const status = accountStatus(resolvedAccountId);
+      const streamReconnectCount = status.streamReconnectCount ?? 0;
       return {
-        ok: status.running && !status.lastStreamError,
+        ok: status.running && !status.lastStreamError && streamReconnectCount === 0,
         state: status.running ? "running" : "stopped",
         details: status,
       };

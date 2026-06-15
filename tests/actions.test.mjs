@@ -504,6 +504,41 @@ test("handles direct mini-app cards with configured defaults", async () => {
   assert.equal(result.details.appName, "OpenClaw");
 });
 
+test("builds status cards from mini-app defaults and expands URL placeholders", async () => {
+  const { running, sent } = mockRunning();
+  const space = running.spaces.get("space-1");
+  space.type = "direct";
+  const actions = createPhotonMessageActions(new Map([["default", running]]));
+  const config = cfg({
+    miniAppDefaults: {
+      appName: "OpenClaw Status",
+      extensionBundleId: "net.mouxy.openclawstatus.MessagesExtension",
+      teamId: "TEAM123456",
+      url: "openclawstatus://run?id={{runId}}&phase={{phase}}&step={{step}}&result={{result}}",
+    },
+  });
+
+  const result = await actions.handleAction({
+    action: "status-card",
+    cfg: config,
+    params: {
+      to: "space-1",
+      runId: "run 123",
+      phase: "done",
+      step: "Photon tests passed",
+      result: "Gateway is healthy",
+    },
+    senderIsOwner: false,
+  });
+
+  const message = sent.find((sentMessage) => sentMessage.content.type === "customized-mini-app");
+  assert.equal(message.content.appName, "OpenClaw Status");
+  assert.equal(message.content.layout.caption, "OpenClaw done");
+  assert.equal(message.content.layout.subcaption, "Gateway is healthy");
+  assert.equal(message.content.url, "openclawstatus://run?id=run%20123&phase=complete&step=Photon%20tests%20passed&result=Gateway%20is%20healthy");
+  assert.equal(result.details.extensionBundleId, "net.mouxy.openclawstatus.MessagesExtension");
+});
+
 test("keeps group mini-app cards owner-gated", async () => {
   const { running } = mockRunning();
   const actions = createPhotonMessageActions(new Map([["default", running]]));

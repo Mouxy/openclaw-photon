@@ -118,6 +118,16 @@
             "description": "Mark accepted inbound iMessages read best-effort in remote iMessage mode.",
             "type": "boolean"
           },
+          "typingIndicators": {
+            "default": true,
+            "description": "Clearer name for refreshing the native iMessage typing indicator during accepted long-running turns. Overrides progressUpdates when set.",
+            "type": "boolean"
+          },
+          "progressUpdates": {
+            "default": true,
+            "description": "Backwards-compatible alias for typingIndicators. This no longer sends visible progress text messages.",
+            "type": "boolean"
+          },
           "dispatchControlEvents": {
             "default": false,
             "description": "Dispatch tapbacks, unsends, typing, poll votes, and similar controls into agent turns.",
@@ -173,6 +183,14 @@
               },
               "trailingSubcaption": {
                 "description": "Optional trailing secondary card text.",
+                "type": "string"
+              },
+              "imageTitle": {
+                "description": "Optional large title in the mini-app card image area.",
+                "type": "string"
+              },
+              "imageSubtitle": {
+                "description": "Optional subtitle in the mini-app card image area.",
                 "type": "string"
               },
               "summary": {

@@ -55,6 +55,8 @@ const PhotonAccountSchema = z
     maxInboundAttachmentBytes: z.number().int().positive().optional().default(20 * 1024 * 1024),
     maxOutboundAttachmentBytes: z.number().int().positive().optional().default(50 * 1024 * 1024),
     sendReadReceipts: z.boolean().optional().default(true),
+    typingIndicators: z.boolean().optional(),
+    progressUpdates: z.boolean().optional().default(true),
     dispatchControlEvents: z.boolean().optional().default(false),
     nativeActions: z.boolean().optional().default(true),
     dangerousNativeActions: z.boolean().optional().default(false),
@@ -69,6 +71,8 @@ const PhotonAccountSchema = z
         subcaption: z.preprocess(trimmedString, z.string().optional()),
         trailingCaption: z.preprocess(trimmedString, z.string().optional()),
         trailingSubcaption: z.preprocess(trimmedString, z.string().optional()),
+        imageTitle: z.preprocess(trimmedString, z.string().optional()),
+        imageSubtitle: z.preprocess(trimmedString, z.string().optional()),
         summary: z.preprocess(trimmedString, z.string().optional()),
       })
       .optional()
@@ -124,6 +128,8 @@ export function resolveAccount(cfg: any, accountId?: string | null): ResolvedPho
     maxInboundAttachmentBytes: raw.maxInboundAttachmentBytes ?? 20 * 1024 * 1024,
     maxOutboundAttachmentBytes: raw.maxOutboundAttachmentBytes ?? 50 * 1024 * 1024,
     sendReadReceipts: raw.sendReadReceipts ?? true,
+    typingIndicators: raw.typingIndicators ?? raw.progressUpdates ?? true,
+    progressUpdates: raw.typingIndicators ?? raw.progressUpdates ?? true,
     dispatchControlEvents: raw.dispatchControlEvents ?? false,
     nativeActions: raw.nativeActions ?? true,
     dangerousNativeActions: raw.dangerousNativeActions ?? false,

@@ -4,7 +4,7 @@ import { issuePairingChallenge, readChannelAllowFromStore, upsertChannelPairingR
 import { saveMediaBuffer } from "openclaw/plugin-sdk/media-store";
 import { resolveOutboundMediaUrls } from "openclaw/plugin-sdk/reply-payload";
 import { readStoreAllowFromForDmPolicy } from "openclaw/plugin-sdk/security-runtime";
-import type { Message, Space } from "spectrum-ts";
+import { typing, type Message, type Space } from "spectrum-ts";
 import { read as imessageRead } from "spectrum-ts/providers/imessage";
 import { CHANNEL_ID, type PhotonNormalizedInbound, type ResolvedPhotonAccount, type RunningPhotonAccount } from "./types.js";
 import { handlePhotonDirectCommand } from "./directCommands.js";
@@ -312,32 +312,111 @@ function createScopedPairingAccess(params: { channel: string; accountId: string 
   };
 }
 
+async function sendTypingState(
+  space: Space,
+  state: "start" | "stop",
+  runtime: { log?: (message: string) => void },
+): Promise<void> {
+  const startTyping = (space as any).startTyping;
+  const stopTyping = (space as any).stopTyping;
+  const method = state === "start" ? startTyping : stopTyping;
+  if (typeof method === "function") {
+    await method.call(space).catch((err: unknown) => {
+      runtime.log?.(`photon: ${state}Typing failed: ${String(err)}`);
+    });
+    return;
+  }
+
+  if (typeof space.send === "function") {
+    await space.send(typing(state)).catch((err: unknown) => {
+      runtime.log?.(`photon: typing(${state}) failed: ${String(err)}`);
+    });
+  }
+}
+
+export function createPhotonTypingRefresher(params: {
+  space: Space;
+  runtime?: { log?: (message: string) => void };
+  enabled?: boolean;
+  intervalMs?: number;
+}): { stop: () => Promise<void> } {
+  if (params.enabled === false) {
+    return { stop: async () => {} };
+  }
+
+  const intervalMs = params.intervalMs ?? 10_000;
+  let stopped = false;
+  let refreshing = false;
+  let timer: ReturnType<typeof setInterval> | undefined;
+  const refresh = async () => {
+    if (stopped || refreshing) return;
+    refreshing = true;
+    try {
+      await sendTypingState(params.space, "start", params.runtime ?? {});
+    } finally {
+      refreshing = false;
+    }
+  };
+
+  void refresh();
+  timer = setInterval(() => {
+    void refresh();
+  }, intervalMs);
+  timer.unref?.();
+
+  return {
+    stop: async () => {
+      stopped = true;
+      if (timer) clearInterval(timer);
+      await sendTypingState(params.space, "stop", params.runtime ?? {});
+    },
+  };
+}
+
 async function runWithTypingIndicator<T>(
   space: Space,
   runtime: { log?: (message: string) => void; error?: (message: string) => void },
   fn: () => Promise<T>,
+  options: { enabled?: boolean; refreshIntervalMs?: number } = {},
 ): Promise<T> {
   const responding = (space as any).responding;
+  const run = async () => {
+    const refresher = createPhotonTypingRefresher({
+      space,
+      runtime,
+      enabled: options.enabled,
+      intervalMs: options.refreshIntervalMs,
+    });
+    try {
+      return await fn();
+    } finally {
+      await refresher.stop();
+    }
+  };
+
   if (typeof responding === "function") {
-    return await responding.call(space, fn);
+    return await responding.call(space, run);
   }
 
-  const startTyping = (space as any).startTyping;
-  const stopTyping = (space as any).stopTyping;
-  if (typeof startTyping !== "function" || typeof stopTyping !== "function") {
+  if (options.enabled === false) {
     return await fn();
   }
 
-  try {
-    await startTyping.call(space).catch((err: unknown) => {
-      runtime.log?.(`photon: startTyping failed: ${String(err)}`);
-    });
-    return await fn();
-  } finally {
-    await stopTyping.call(space).catch((err: unknown) => {
-      runtime.log?.(`photon: stopTyping failed: ${String(err)}`);
-    });
+  return await run();
+}
+
+function createPhotonReplyOptions(params: { enabled?: boolean }): Record<string, unknown> {
+  if (params.enabled === false) {
+    return {
+      suppressDefaultToolProgressMessages: true,
+      allowProgressCallbacksWhenSourceDeliverySuppressed: false,
+    };
   }
+
+  return {
+    suppressDefaultToolProgressMessages: true,
+    allowProgressCallbacksWhenSourceDeliverySuppressed: false,
+  };
 }
 
 async function markReadBestEffort(params: {
@@ -516,32 +595,38 @@ export async function handlePhotonInbound(params: {
     ...mediaPayload,
   });
 
-  await runWithTypingIndicator(space, runtime, async () => {
-    await dispatchInboundReplyWithBase({
-      cfg,
-      channel: CHANNEL_ID,
-      accountId: account.accountId,
-      route,
-      storePath,
-      ctxPayload,
-      core,
-      deliver: async (replyPayload: any) => {
-        const replyText = String(replyPayload?.text ?? "").trim();
-        const mediaUrls = resolveOutboundMediaUrls(replyPayload);
-        if (!replyText && mediaUrls.length === 0) return;
-        await replyPhotonRich(message, space, replyText, mediaUrls, params.running);
-      },
-      onRecordError: (err: unknown) => {
-        runtime.error?.(`photon: failed updating session meta: ${String(err)}`);
-      },
-      onDispatchError: (err: unknown, info: { kind: string }) => {
-        runtime.error?.(`photon ${info.kind} reply failed: ${String(err)}`);
-      },
-      replyOptions: {
-        disableBlockStreaming: true,
-      },
-    });
-  });
+  await runWithTypingIndicator(
+    space,
+    runtime,
+    async () => {
+      await dispatchInboundReplyWithBase({
+        cfg,
+        channel: CHANNEL_ID,
+        accountId: account.accountId,
+        route,
+        storePath,
+        ctxPayload,
+        core,
+        deliver: async (replyPayload: any) => {
+          const replyText = String(replyPayload?.text ?? "").trim();
+          const mediaUrls = resolveOutboundMediaUrls(replyPayload);
+          if (!replyText && mediaUrls.length === 0) return;
+          await replyPhotonRich(message, space, replyText, mediaUrls, params.running);
+        },
+        onRecordError: (err: unknown) => {
+          runtime.error?.(`photon: failed updating session meta: ${String(err)}`);
+        },
+        onDispatchError: (err: unknown, info: { kind: string }) => {
+          runtime.error?.(`photon ${info.kind} reply failed: ${String(err)}`);
+        },
+        replyOptions: {
+          disableBlockStreaming: true,
+          ...createPhotonReplyOptions({ enabled: account.typingIndicators }),
+        },
+      });
+    },
+    { enabled: account.typingIndicators, refreshIntervalMs: 10_000 },
+  );
 
   return { accepted: true, normalized };
 }

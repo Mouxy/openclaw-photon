@@ -16,6 +16,8 @@ export interface PhotonMiniAppDefaults {
   subcaption?: string;
   trailingCaption?: string;
   trailingSubcaption?: string;
+  imageTitle?: string;
+  imageSubtitle?: string;
   summary?: string;
 }
 
@@ -39,6 +41,8 @@ export interface PhotonAccountConfig {
   maxInboundAttachmentBytes?: number;
   maxOutboundAttachmentBytes?: number;
   sendReadReceipts?: boolean;
+  typingIndicators?: boolean;
+  progressUpdates?: boolean;
   dispatchControlEvents?: boolean;
   nativeActions?: boolean;
   dangerousNativeActions?: boolean;
@@ -64,6 +68,8 @@ export interface ResolvedPhotonAccount {
   maxInboundAttachmentBytes: number;
   maxOutboundAttachmentBytes: number;
   sendReadReceipts: boolean;
+  typingIndicators: boolean;
+  progressUpdates: boolean;
   dispatchControlEvents: boolean;
   nativeActions: boolean;
   dangerousNativeActions: boolean;

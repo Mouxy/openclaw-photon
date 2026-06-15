@@ -3,6 +3,7 @@ import { test } from "node:test";
 import {
   buildDirectTextCommandMetadata,
   cleanLeadingMention,
+  createPhotonTypingRefresher,
   isPhotonControlEventContent,
   normalizePhotonInbound,
 } from "../dist/src/inbound.js";
@@ -216,4 +217,69 @@ test("respects disabled text commands for direct slash messages", () => {
   });
 
   assert.deepEqual(result, {});
+});
+
+test("refreshes typing during long Photon turns without sending text updates", async () => {
+  const states = [];
+  const space = {
+    send: async (content) => {
+      states.push(content);
+      return { id: `sent-${states.length}` };
+    },
+  };
+
+  const refresher = createPhotonTypingRefresher({
+    space,
+    intervalMs: 5,
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 13));
+  await refresher.stop();
+
+  assert.ok(states.length >= 3);
+  const built = await Promise.all(states.map((content) => content.build()));
+  assert.deepEqual(
+    built.map((content) => content.type),
+    ["typing", "typing", "typing", "typing"].slice(0, built.length),
+  );
+  assert.deepEqual(built.at(-1), { type: "typing", state: "stop" });
+});
+
+test("suppresses typing refreshes when disabled", async () => {
+  const sent = [];
+  const space = {
+    send: async (content) => {
+      sent.push(content);
+      return { id: `sent-${sent.length}` };
+    },
+  };
+
+  const refresher = createPhotonTypingRefresher({
+    space,
+    enabled: false,
+    intervalMs: 5,
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 8));
+  assert.equal(sent.length, 0);
+
+  await refresher.stop();
+});
+
+test("uses native start and stop typing methods when available", async () => {
+  const states = [];
+  const space = {
+    startTyping: async () => states.push("start"),
+    stopTyping: async () => states.push("stop"),
+  };
+
+  const refresher = createPhotonTypingRefresher({
+    space,
+    intervalMs: 5,
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 8));
+  await refresher.stop();
+
+  assert.deepEqual(states, ["start", "start", "stop"]);
 });

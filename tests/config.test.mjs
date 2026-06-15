@@ -9,9 +9,36 @@ test("resolves safe defaults", () => {
   assert.equal(account.groupPolicy, "allowlist");
   assert.equal(account.requireMention, true);
   assert.equal(account.sendReadReceipts, true);
+  assert.equal(account.typingIndicators, true);
+  assert.equal(account.progressUpdates, true);
   assert.equal(account.maxInboundAttachmentBytes, 20 * 1024 * 1024);
   assert.equal(account.maxOutboundAttachmentBytes, 50 * 1024 * 1024);
   assert.equal(account.dispatchControlEvents, false);
+});
+
+test("can disable long-turn typing indicators with the clearer config name", () => {
+  const account = resolveAccount({
+    channels: {
+      photon: {
+        typingIndicators: false,
+        progressUpdates: true,
+      },
+    },
+  });
+  assert.equal(account.typingIndicators, false);
+  assert.equal(account.progressUpdates, false);
+});
+
+test("keeps progressUpdates as a backwards-compatible typing indicator alias", () => {
+  const account = resolveAccount({
+    channels: {
+      photon: {
+        progressUpdates: false,
+      },
+    },
+  });
+  assert.equal(account.typingIndicators, false);
+  assert.equal(account.progressUpdates, false);
 });
 
 test("normalizes allowlists", () => {

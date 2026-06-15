@@ -212,6 +212,8 @@ export function notePhotonStarted(accountId: string): PhotonRuntimeStatus {
     running: true,
     startedAt: now,
     stoppedAt: undefined,
+    lastStreamReconnectAt: undefined,
+    streamReconnectCount: 0,
     lastStreamError: undefined,
   });
 }

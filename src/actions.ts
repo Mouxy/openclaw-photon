@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import {
   attachment,
@@ -65,6 +66,7 @@ const SAFE_ACTIONS = [
   "poll",
   "photonDoctor",
   "sendMiniApp",
+  "sendStatusCard",
 ] as const;
 
 const DANGEROUS_ACTIONS = ["renameGroup", "setGroupIcon", "setBackground"] as const;
@@ -73,6 +75,8 @@ const SUPPORTED_ACTIONS = new Set<string>([
   ...DANGEROUS_ACTIONS,
   "sendAttachment",
   "sendCustomizedMiniApp",
+  "sendStatusCard",
+  "status-card",
   "mini-app",
   "delete",
   "thread-reply",
@@ -213,6 +217,83 @@ function readNumber(params: Record<string, unknown>, ...keys: string[]): number 
     if (Number.isFinite(parsed)) return parsed;
   }
   return undefined;
+}
+
+function normalizeStatusPhase(raw: string | undefined): string {
+  const value = raw?.trim().toLowerCase().replace(/[\s_-]+/g, "");
+  switch (value) {
+    case "done":
+    case "complete":
+    case "completed":
+    case "success":
+    case "ok":
+      return "complete";
+    case "problem":
+    case "problemfound":
+    case "failed":
+    case "failure":
+    case "warning":
+    case "alert":
+      return "failed";
+    case "input":
+    case "needsinput":
+    case "decision":
+    case "approval":
+    default:
+      return "needsInput";
+  }
+}
+
+function statusCardDefaults(params: Record<string, unknown>): Record<string, unknown> {
+  const phase = normalizeStatusPhase(readString(params, "phase", "status", "cardType", "card_type", "type"));
+  const runId = readString(params, "runId", "run_id", "id") ?? randomUUID();
+  const step = readString(params, "step", "detail") ?? (
+    phase === "complete"
+      ? "Finished"
+      : phase === "failed"
+        ? "Needs attention"
+        : "Waiting for your decision"
+  );
+  const result = readString(params, "result", "outcome", "summary") ?? (
+    phase === "complete"
+      ? "Finished successfully"
+      : phase === "failed"
+        ? "OpenClaw found a problem that needs a manual check"
+        : "Approve, retry, skip, or open details"
+  );
+  const imageTitle = phase === "complete" ? "Done" : phase === "failed" ? "Problem found" : "Needs input";
+  const detail = phase === "complete" ? "Result" : phase === "failed" ? "Attention" : "Decision";
+
+  return {
+    runId,
+    id: runId,
+    phase,
+    step,
+    result,
+    caption: phase === "complete" ? "OpenClaw done" : phase === "failed" ? "OpenClaw found a problem" : "OpenClaw needs input",
+    subcaption: result,
+    trailingCaption: detail,
+    summary: `OpenClaw: ${imageTitle} - ${result}`,
+    imageTitle,
+    imageSubtitle: detail,
+  };
+}
+
+function templateVariables(source: Record<string, unknown>): Record<string, string> {
+  const variables: Record<string, string> = {};
+  for (const [key, value] of Object.entries(source)) {
+    if (value == null || typeof value === "object") continue;
+    variables[key] = String(value);
+  }
+  return variables;
+}
+
+function interpolateTemplate(value: string | undefined, variables: Record<string, string>, encodeValues = false): string | undefined {
+  if (!value) return undefined;
+  return value.replace(/\{\{\s*([a-zA-Z0-9_.-]+)\s*\}\}/g, (_match, key: string) => {
+    const replacement = variables[key] ?? "";
+    return encodeValues ? encodeURIComponent(replacement) : replacement;
+  });
 }
 
 function reactionKey(spaceId: string, targetMessageId: string, emoji: string): string {
@@ -379,32 +460,35 @@ async function miniAppImageBytes(params: Record<string, unknown>, account: Resol
   return new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength);
 }
 
-async function miniAppInput(params: Record<string, unknown>, account: ResolvedPhotonAccount) {
+async function miniAppInput(params: Record<string, unknown>, account: ResolvedPhotonAccount, options: { statusCard?: boolean } = {}) {
   const defaults = account.miniAppDefaults ?? {};
+  const cardDefaults = options.statusCard ? statusCardDefaults(params) : {};
   const layoutParam = params.layout && typeof params.layout === "object" && !Array.isArray(params.layout)
     ? (params.layout as Record<string, unknown>)
     : {};
-  const layoutSource = { ...defaults, ...params, ...layoutParam };
+  const baseSource = { ...defaults, ...params, ...cardDefaults };
+  const layoutSource = { ...baseSource, ...layoutParam };
+  const variables = templateVariables(layoutSource);
   const image = await miniAppImageBytes(layoutSource, account);
-  const imageTitle = readString(layoutSource, "imageTitle", "image_title");
-  const imageSubtitle = readString(layoutSource, "imageSubtitle", "image_subtitle");
+  const imageTitle = interpolateTemplate(readString(layoutSource, "imageTitle", "image_title"), variables);
+  const imageSubtitle = interpolateTemplate(readString(layoutSource, "imageSubtitle", "image_subtitle"), variables);
   const layout = {
-    ...(readString(layoutSource, "caption", "title") ? { caption: readString(layoutSource, "caption", "title") } : {}),
-    ...(readString(layoutSource, "subcaption", "subtitle") ? { subcaption: readString(layoutSource, "subcaption", "subtitle") } : {}),
-    ...(readString(layoutSource, "trailingCaption", "trailing_caption") ? { trailingCaption: readString(layoutSource, "trailingCaption", "trailing_caption") } : {}),
-    ...(readString(layoutSource, "trailingSubcaption", "trailing_subcaption") ? { trailingSubcaption: readString(layoutSource, "trailingSubcaption", "trailing_subcaption") } : {}),
-    ...(readString(layoutSource, "summary", "fallback") ? { summary: readString(layoutSource, "summary", "fallback") } : {}),
+    ...(readString(layoutSource, "caption", "title") ? { caption: interpolateTemplate(readString(layoutSource, "caption", "title"), variables) } : {}),
+    ...(readString(layoutSource, "subcaption", "subtitle") ? { subcaption: interpolateTemplate(readString(layoutSource, "subcaption", "subtitle"), variables) } : {}),
+    ...(readString(layoutSource, "trailingCaption", "trailing_caption") ? { trailingCaption: interpolateTemplate(readString(layoutSource, "trailingCaption", "trailing_caption"), variables) } : {}),
+    ...(readString(layoutSource, "trailingSubcaption", "trailing_subcaption") ? { trailingSubcaption: interpolateTemplate(readString(layoutSource, "trailingSubcaption", "trailing_subcaption"), variables) } : {}),
+    ...(readString(layoutSource, "summary", "fallback") ? { summary: interpolateTemplate(readString(layoutSource, "summary", "fallback"), variables) } : {}),
     ...(image ? { image } : {}),
-    ...(imageTitle ? { imageTitle } : {}),
-    ...(imageSubtitle ? { imageSubtitle } : {}),
+    ...(image && imageTitle ? { imageTitle } : {}),
+    ...(image && imageSubtitle ? { imageSubtitle } : {}),
   };
 
   return {
-    appName: readString({ ...defaults, ...params }, "appName", "app_name"),
-    appStoreId: readNumber({ ...defaults, ...params }, "appStoreId", "app_store_id"),
-    extensionBundleId: readString({ ...defaults, ...params }, "extensionBundleId", "extension_bundle_id", "bundleId", "bundle_id"),
-    teamId: readString({ ...defaults, ...params }, "teamId", "team_id"),
-    url: readString({ ...defaults, ...params }, "url", "appUrl", "app_url"),
+    appName: interpolateTemplate(readString(baseSource, "appName", "app_name"), variables),
+    appStoreId: readNumber(baseSource, "appStoreId", "app_store_id"),
+    extensionBundleId: interpolateTemplate(readString(baseSource, "extensionBundleId", "extension_bundle_id", "bundleId", "bundle_id"), variables),
+    teamId: interpolateTemplate(readString(baseSource, "teamId", "team_id"), variables),
+    url: interpolateTemplate(readString(baseSource, "url", "appUrl", "app_url"), variables, true),
     layout,
   };
 }
@@ -452,6 +536,8 @@ function doctorResult(account: ResolvedPhotonAccount, running: RunningPhotonAcco
     dmPolicy: account.dmPolicy,
     groupPolicy: account.groupPolicy,
     requireMention: account.requireMention,
+    typingIndicators: account.typingIndicators,
+    progressUpdates: account.progressUpdates,
     nativeActions: account.nativeActions,
     dangerousNativeActions: account.dangerousNativeActions,
     effectsDefault: false,
@@ -483,6 +569,7 @@ export function createPhotonMessageActions(runningAccounts: Map<string, RunningP
           "upload-file": ["media", "mediaUrl", "filePath", "path", "fileUrl"],
           sendWithEffect: ["media", "mediaUrl", "filePath", "path", "fileUrl"],
           sendMiniApp: ["image", "imagePath", "filePath", "path"],
+          sendStatusCard: ["image", "imagePath", "filePath", "path"],
           setGroupIcon: ["image", "media", "mediaUrl", "filePath", "path", "fileUrl"],
           setBackground: ["background", "image", "media", "mediaUrl", "filePath", "path", "fileUrl"],
           "topic-edit": ["image", "media", "mediaUrl", "filePath", "path", "fileUrl"],
@@ -504,7 +591,9 @@ export function createPhotonMessageActions(runningAccounts: Map<string, RunningP
       "thread-reply": { aliases: ["target", "messageId", "replyTo"] },
       sendWithEffect: { aliases: ["target"] },
       sendMiniApp: { aliases: ["target"] },
+      sendStatusCard: { aliases: ["target"] },
       sendCustomizedMiniApp: { aliases: ["target"] },
+      "status-card": { aliases: ["target"] },
       "mini-app": { aliases: ["target"] },
       renameGroup: { aliases: ["target"] },
       setGroupIcon: { aliases: ["target"] },
@@ -519,6 +608,8 @@ export function createPhotonMessageActions(runningAccounts: Map<string, RunningP
           ? "upload-file"
           : ctx.action === "sendCustomizedMiniApp" || ctx.action === "mini-app"
             ? "sendMiniApp"
+          : ctx.action === "status-card"
+            ? "sendStatusCard"
           : ctx.action === "delete"
             ? "unsend"
             : ctx.action === "thread-reply"
@@ -658,10 +749,10 @@ export function createPhotonMessageActions(runningAccounts: Map<string, RunningP
         }, space);
       }
 
-      if (action === "sendMiniApp") {
+      if (action === "sendMiniApp" || action === "sendStatusCard") {
         const space = await resolveActionSpace({ ctx, account, running });
         assertMiniAppAllowed(ctx, account, space);
-        const input = await miniAppInput(ctx.params, account);
+        const input = await miniAppInput(ctx.params, account, { statusCard: action === "sendStatusCard" });
         if (!input.appName) throw new Error("Photon sendMiniApp requires appName.");
         if (!input.extensionBundleId) throw new Error("Photon sendMiniApp requires extensionBundleId/bundleId.");
         if (!input.teamId) throw new Error("Photon sendMiniApp requires teamId.");
