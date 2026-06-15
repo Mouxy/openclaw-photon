@@ -4,6 +4,7 @@ import path from "node:path";
 import type {
   PhotonPersistedMessage,
   PhotonPersistedReaction,
+  PhotonDeliveryRecord,
   PhotonRuntimeStatus,
   PhotonPersistedSpace,
 } from "./types.js";
@@ -16,6 +17,7 @@ type AccountState = {
   latestOutboundBySpace: Record<string, string>;
   processedMessages: Record<string, { updatedAt: number }>;
   reactions: Record<string, PhotonPersistedReaction>;
+  deliveries: Record<string, PhotonDeliveryRecord>;
   status?: PhotonRuntimeStatus;
 };
 
@@ -28,6 +30,7 @@ const MAX_SPACES = 1000;
 const MAX_MESSAGES = 3000;
 const MAX_PROCESSED_MESSAGES = 4000;
 const MAX_REACTIONS = 1000;
+const MAX_DELIVERIES = 1000;
 
 let cachedState: PhotonState | undefined;
 
@@ -49,6 +52,7 @@ function emptyAccountState(): AccountState {
     latestOutboundBySpace: {},
     processedMessages: {},
     reactions: {},
+    deliveries: {},
   };
 }
 
@@ -74,6 +78,7 @@ function accountState(accountId: string): AccountState {
   state.accounts[accountId]!.latestOutboundBySpace ??= {};
   state.accounts[accountId]!.processedMessages ??= {};
   state.accounts[accountId]!.reactions ??= {};
+  state.accounts[accountId]!.deliveries ??= {};
   return state.accounts[accountId]!;
 }
 
@@ -102,6 +107,7 @@ function pruneAccount(account: AccountState): void {
   pruneRecord(account.messages, MAX_MESSAGES);
   pruneRecord(account.processedMessages, MAX_PROCESSED_MESSAGES);
   pruneRecord(account.reactions, MAX_REACTIONS);
+  pruneRecord(account.deliveries, MAX_DELIVERIES);
   const latestMaps = [
     account.latestBySpace,
     account.latestInboundBySpace,
@@ -146,6 +152,52 @@ export function forgetPersistedReaction(accountId: string, key: string): void {
   const account = accountState(accountId);
   delete account.reactions[key];
   writeState();
+}
+
+export function rememberPhotonDelivery(
+  accountId: string,
+  record: Omit<PhotonDeliveryRecord, "updatedAt"> & { updatedAt?: number },
+): PhotonDeliveryRecord {
+  const account = accountState(accountId);
+  const existing = account.deliveries[record.id];
+  const next: PhotonDeliveryRecord = {
+    ...existing,
+    ...record,
+    outboundMessageIds: record.outboundMessageIds ?? existing?.outboundMessageIds,
+    updatedAt: record.updatedAt ?? Date.now(),
+  };
+  account.deliveries[record.id] = next;
+  pruneAccount(account);
+  writeState();
+  return next;
+}
+
+export function updatePhotonDelivery(
+  accountId: string,
+  id: string,
+  patch: Partial<Omit<PhotonDeliveryRecord, "id" | "inboundMessageId" | "spaceId" | "receivedAt">>,
+): PhotonDeliveryRecord | undefined {
+  const account = accountState(accountId);
+  const existing = account.deliveries[id];
+  if (!existing) return undefined;
+  const next: PhotonDeliveryRecord = {
+    ...existing,
+    ...patch,
+    updatedAt: Date.now(),
+  };
+  account.deliveries[id] = next;
+  writeState();
+  return next;
+}
+
+export function getPhotonDelivery(accountId: string, id: string): PhotonDeliveryRecord | undefined {
+  return accountState(accountId).deliveries[id];
+}
+
+export function listPhotonDeliveries(accountId: string, limit = 20): PhotonDeliveryRecord[] {
+  return Object.values(accountState(accountId).deliveries)
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .slice(0, Math.max(0, limit));
 }
 
 export function getPersistedMessage(accountId: string, messageId: string): PhotonPersistedMessage | undefined {

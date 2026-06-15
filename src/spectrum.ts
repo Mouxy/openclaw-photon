@@ -379,8 +379,8 @@ export async function sendPhotonTyping(
   await space.send(typing(state));
 }
 
-export async function replyPhotonText(message: Message, fallbackSpace: Space, body: string): Promise<void> {
-  await replyPhotonRich(message, fallbackSpace, body);
+export async function replyPhotonText(message: Message, fallbackSpace: Space, body: string): Promise<PhotonOutboundResult | undefined> {
+  return await replyPhotonRich(message, fallbackSpace, body);
 }
 
 export async function replyPhotonRich(
@@ -390,9 +390,9 @@ export async function replyPhotonRich(
   mediaUrls: string[] = [],
   running?: RunningPhotonAccount,
   options: PhotonContentOptions = {},
-): Promise<void> {
+): Promise<PhotonOutboundResult | undefined> {
   const contents = buildPhotonContents(body, mediaUrls, options);
-  if (contents.length === 0) return;
+  if (contents.length === 0) return undefined;
 
   const [first, ...rest] = contents;
   try {
@@ -401,8 +401,15 @@ export async function replyPhotonRich(
     for (const sent of messages) {
       if (running) rememberPhotonMessage(running, fallbackSpace, sent);
     }
-    await sendContents(fallbackSpace, rest, running);
+    const restMessages = await sendContents(fallbackSpace, rest, running);
+    const allMessages = [...messages, ...restMessages];
+    if (running) {
+      const last = allMessages.at(-1);
+      notePhotonOutbound(running.accountId, { id: last?.id, spaceId: fallbackSpace.id });
+    }
+    return toPhotonOutboundResult(fallbackSpace, allMessages);
   } catch {
-    await sendContents(fallbackSpace, contents, running);
+    const messages = await sendContents(fallbackSpace, contents, running);
+    return toPhotonOutboundResult(fallbackSpace, messages);
   }
 }

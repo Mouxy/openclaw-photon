@@ -9,7 +9,7 @@ import { read as imessageRead } from "spectrum-ts/providers/imessage";
 import { CHANNEL_ID, type PhotonNormalizedInbound, type ResolvedPhotonAccount, type RunningPhotonAccount } from "./types.js";
 import { handlePhotonDirectCommand } from "./directCommands.js";
 import { replyPhotonRich, replyPhotonText } from "./spectrum.js";
-import { notePhotonMediaError, notePhotonUnsupportedContent } from "./state.js";
+import { notePhotonMediaError, notePhotonUnsupportedContent, rememberPhotonDelivery, updatePhotonDelivery } from "./state.js";
 
 function normalizeId(value: unknown): string {
   return String(value ?? "").trim();
@@ -461,21 +461,59 @@ export async function handlePhotonInbound(params: {
   const mediaPayload = buildChannelInboundMediaPayload(
     toInboundMediaFacts(inboundMedia, { messageId: normalized.messageId }),
   );
+  const deliveryId = normalized.messageId;
+  const now = Date.now();
+  if (deliveryId) {
+    rememberPhotonDelivery(account.accountId, {
+      id: deliveryId,
+      inboundMessageId: normalized.messageId,
+      spaceId: normalized.spaceId,
+      platform: normalized.platform,
+      senderId: normalized.senderId,
+      chatType: normalized.chatType,
+      bodyPreview: summarizeBody(normalized.rawBody),
+      status: "received",
+      receivedAt: now,
+    });
+  }
 
   runtime.log?.(
     `photon inbound account=${account.accountId} platform=${normalized.platform} space=${normalized.spaceId || "missing"} sender=${normalized.senderId || "missing"} message=${normalized.messageId || "missing"} chatType=${normalized.chatType} mentioned=${normalized.wasMentioned} bodyLength=${normalized.rawBody.length} media=${inboundMedia.length} bodyPreview=${JSON.stringify(summarizeBody(normalized.rawBody))}`,
   );
 
   if (!normalized.spaceId || !normalized.messageId) {
+    if (deliveryId) {
+      updatePhotonDelivery(account.accountId, deliveryId, {
+        status: "ignored",
+        reason: "missing identifiers",
+        ignoredAt: Date.now(),
+      });
+    }
     return { accepted: false, reason: "missing identifiers", normalized };
   }
   if (message.direction === "outbound") {
+    updatePhotonDelivery(account.accountId, deliveryId, {
+      status: "ignored",
+      reason: "outbound echo",
+      ignoredAt: Date.now(),
+    });
     return { accepted: false, reason: "outbound echo", normalized };
   }
   if (!account.dispatchControlEvents && isPhotonControlEventContent(message.content)) {
-    return { accepted: false, reason: `control event ${contentType(message.content) ?? "unknown"}`, normalized };
+    const reason = `control event ${contentType(message.content) ?? "unknown"}`;
+    updatePhotonDelivery(account.accountId, deliveryId, {
+      status: "ignored",
+      reason,
+      ignoredAt: Date.now(),
+    });
+    return { accepted: false, reason, normalized };
   }
   if (!normalized.rawBody) {
+    updatePhotonDelivery(account.accountId, deliveryId, {
+      status: "ignored",
+      reason: "empty body",
+      ignoredAt: Date.now(),
+    });
     return { accepted: false, reason: "empty body", normalized };
   }
 
@@ -483,12 +521,27 @@ export async function handlePhotonInbound(params: {
   let bodyForAgent = normalized.rawBody;
   if (isGroup) {
     if (account.groupPolicy === "disabled") {
+      updatePhotonDelivery(account.accountId, deliveryId, {
+        status: "ignored",
+        reason: "group policy disabled",
+        ignoredAt: Date.now(),
+      });
       return { accepted: false, reason: "group policy disabled", normalized };
     }
     if (account.groupPolicy === "allowlist" && !isAllowed(account.groupAllowFrom, normalized.spaceId)) {
+      updatePhotonDelivery(account.accountId, deliveryId, {
+        status: "ignored",
+        reason: "group not allowlisted",
+        ignoredAt: Date.now(),
+      });
       return { accepted: false, reason: "group not allowlisted", normalized };
     }
     if (account.requireMention && !normalized.wasMentioned) {
+      updatePhotonDelivery(account.accountId, deliveryId, {
+        status: "ignored",
+        reason: "mention required",
+        ignoredAt: Date.now(),
+      });
       return { accepted: false, reason: "mention required", normalized };
     }
     if (account.requireMention) {
@@ -496,6 +549,11 @@ export async function handlePhotonInbound(params: {
     }
   } else {
     if (account.dmPolicy === "disabled") {
+      updatePhotonDelivery(account.accountId, deliveryId, {
+        status: "ignored",
+        reason: "dm policy disabled",
+        ignoredAt: Date.now(),
+      });
       return { accepted: false, reason: "dm policy disabled", normalized };
     }
     if (account.dmPolicy !== "open") {
@@ -528,14 +586,29 @@ export async function handlePhotonInbound(params: {
             },
           });
         }
-        return { accepted: false, reason: `dm policy ${account.dmPolicy}`, normalized };
+        const reason = `dm policy ${account.dmPolicy}`;
+        updatePhotonDelivery(account.accountId, deliveryId, {
+          status: "ignored",
+          reason,
+          ignoredAt: Date.now(),
+        });
+        return { accepted: false, reason, normalized };
       }
     }
   }
 
+  updatePhotonDelivery(account.accountId, deliveryId, {
+    status: "accepted",
+    acceptedAt: Date.now(),
+  });
   await markReadBestEffort({ account, message, space, runtime });
 
   if (await handlePhotonDirectCommand({ account, cfg, message, normalized, running: params.running, space })) {
+    updatePhotonDelivery(account.accountId, deliveryId, {
+      status: "replied",
+      reason: "direct command",
+      repliedAt: Date.now(),
+    });
     return { accepted: true, normalized };
   }
 
@@ -611,13 +684,24 @@ export async function handlePhotonInbound(params: {
           const replyText = String(replyPayload?.text ?? "").trim();
           const mediaUrls = resolveOutboundMediaUrls(replyPayload);
           if (!replyText && mediaUrls.length === 0) return;
-          await replyPhotonRich(message, space, replyText, mediaUrls, params.running);
+          const result = await replyPhotonRich(message, space, replyText, mediaUrls, params.running);
+          updatePhotonDelivery(account.accountId, deliveryId, {
+            status: "replied",
+            outboundMessageIds: result?.meta?.messageIds ?? (result?.messageId ? [result.messageId] : undefined),
+            repliedAt: Date.now(),
+          });
         },
         onRecordError: (err: unknown) => {
           runtime.error?.(`photon: failed updating session meta: ${String(err)}`);
         },
         onDispatchError: (err: unknown, info: { kind: string }) => {
           runtime.error?.(`photon ${info.kind} reply failed: ${String(err)}`);
+          updatePhotonDelivery(account.accountId, deliveryId, {
+            status: "failed",
+            reason: info.kind,
+            error: String(err),
+            failedAt: Date.now(),
+          });
         },
         replyOptions: {
           disableBlockStreaming: true,

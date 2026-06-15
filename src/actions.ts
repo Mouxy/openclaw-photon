@@ -22,6 +22,7 @@ import {
   getLatestPersistedMessageForSpace,
   getPersistedMessage,
   getPersistedReaction,
+  listPhotonDeliveries,
   listPersistedSpaces,
   notePhotonActionError,
   rememberPersistedReaction,
@@ -526,6 +527,7 @@ function buildAccountContents(
 function doctorResult(account: ResolvedPhotonAccount, running: RunningPhotonAccount | undefined): AgentToolResult {
   const persisted = getPhotonStatus(account.accountId);
   const spaces = listPersistedSpaces(account.accountId);
+  const recentDeliveries = listPhotonDeliveries(account.accountId, 10);
   return jsonActionResult({
     ok: Boolean(running),
     channel: CHANNEL_ID,
@@ -551,6 +553,7 @@ function doctorResult(account: ResolvedPhotonAccount, running: RunningPhotonAcco
       cachedReactionHandles: running?.reactionMessages.size ?? undefined,
       persistedSpaces: spaces.length,
     },
+    recentDeliveries,
   });
 }
 

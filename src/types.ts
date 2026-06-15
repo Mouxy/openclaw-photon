@@ -130,6 +130,28 @@ export interface PhotonPersistedReaction {
   updatedAt: number;
 }
 
+export type PhotonDeliveryStatus = "received" | "accepted" | "ignored" | "replied" | "failed";
+
+export interface PhotonDeliveryRecord {
+  id: string;
+  inboundMessageId: string;
+  spaceId: string;
+  platform?: string;
+  senderId?: string;
+  chatType?: "direct" | "group";
+  bodyPreview?: string;
+  status: PhotonDeliveryStatus;
+  reason?: string;
+  error?: string;
+  outboundMessageIds?: string[];
+  receivedAt: number;
+  acceptedAt?: number;
+  ignoredAt?: number;
+  repliedAt?: number;
+  failedAt?: number;
+  updatedAt: number;
+}
+
 export interface PhotonRuntimeStatus {
   running: boolean;
   startedAt?: number;

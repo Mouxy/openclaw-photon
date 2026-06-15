@@ -34,6 +34,22 @@ test("persists spaces, latest messages, and reactions", async () => {
     reactionMessageId: "reaction-1",
     updatedAt: 3,
   });
+  state.rememberPhotonDelivery("default", {
+    id: "msg-1",
+    inboundMessageId: "msg-1",
+    spaceId: "space-1",
+    platform: "imessage",
+    senderId: "user-1",
+    chatType: "direct",
+    bodyPreview: "hello",
+    status: "received",
+    receivedAt: 5,
+  });
+  state.updatePhotonDelivery("default", "msg-1", {
+    status: "replied",
+    outboundMessageIds: ["msg-2"],
+    repliedAt: 6,
+  });
   state.notePhotonStarted("default");
   state.notePhotonInbound("default", { id: "msg-1", spaceId: "space-1" });
   state.notePhotonOutbound("default", { id: "msg-2", spaceId: "space-1" });
@@ -51,6 +67,9 @@ test("persists spaces, latest messages, and reactions", async () => {
   assert.equal(state.getPhotonStatus("default").lastInboundMessageId, "msg-1");
   assert.equal(state.getPhotonStatus("default").lastOutboundMessageId, "msg-2");
   assert.equal(state.getPhotonStatus("default").streamReconnectCount, 1);
+  assert.equal(state.getPhotonDelivery("default", "msg-1").status, "replied");
+  assert.deepEqual(state.getPhotonDelivery("default", "msg-1").outboundMessageIds, ["msg-2"]);
+  assert.equal(state.listPhotonDeliveries("default")[0].id, "msg-1");
 
   state.forgetPersistedReaction("default", "reaction-key");
   assert.equal(state.getPersistedReaction("default", "reaction-key"), undefined);
