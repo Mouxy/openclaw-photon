@@ -169,6 +169,16 @@ function contentType(content: any): string | undefined {
   return content && typeof content === "object" && typeof content.type === "string" ? content.type : undefined;
 }
 
+function isSelectedPollOption(content: any): boolean {
+  const value = content?.selected;
+  if (value === true) return true;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    return ["true", "selected", "select", "add", "added"].includes(normalized);
+  }
+  return false;
+}
+
 export function isPhotonControlEventContent(content: any): boolean {
   const type = contentType(content);
   switch (type) {
@@ -189,7 +199,7 @@ export function shouldIgnorePhotonControlEvent(account: Pick<ResolvedPhotonAccou
     case "typing":
       return true;
     case "poll_option":
-      return !account.dispatchPollVotes || content?.selected !== true;
+      return !account.dispatchPollVotes || !isSelectedPollOption(content);
     case "group":
       return Array.isArray(content.items) && content.items.every((item: any) => shouldIgnorePhotonControlEvent(account, item?.content ?? item));
     default:

@@ -95,7 +95,10 @@ test("lets selected poll votes wake the agent while suppressing noisy controls",
 
   assert.equal(shouldIgnorePhotonControlEvent(account, { type: "typing" }), true);
   assert.equal(shouldIgnorePhotonControlEvent(account, { type: "poll_option", title: "Choice", selected: true }), false);
+  assert.equal(shouldIgnorePhotonControlEvent(account, { type: "poll_option", title: "Choice", selected: "selected" }), false);
+  assert.equal(shouldIgnorePhotonControlEvent(account, { type: "poll_option", title: "Choice", selected: "true" }), false);
   assert.equal(shouldIgnorePhotonControlEvent(account, { type: "poll_option", title: "Choice", selected: false }), true);
+  assert.equal(shouldIgnorePhotonControlEvent(account, { type: "poll_option", title: "Choice", selected: "deselected" }), true);
   assert.equal(
     shouldIgnorePhotonControlEvent({ dispatchControlEvents: false, dispatchPollVotes: false }, { type: "poll_option", title: "Choice", selected: true }),
     true,
