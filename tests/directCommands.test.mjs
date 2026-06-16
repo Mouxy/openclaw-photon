@@ -89,6 +89,9 @@ function mockContext(body) {
 
 test("summarizes direct Photon command affordances", () => {
   assert.match(buildPhotonEffectsSummary(), /\/effect <name> <message>/);
+  assert.match(buildPhotonEffectsSummary(), /\/animate <name> <message>/);
+  assert.match(buildPhotonEffectsSummary(), /big, small, shake, nod, explode, ripple, bloom, jitter/);
+  assert.match(buildPhotonAppsSummary(account()), /\/animate <name> <message>/);
   assert.match(buildPhotonAppsSummary(account()), /mini-app defaults: missing appName, teamId, extensionBundleId, url/);
   assert.match(buildPhotonDoctorSummary(account(), mockContext("/doctor").running), /Photon doctor/);
 });
@@ -123,4 +126,15 @@ test("sends direct effect commands through native iMessage effect action", async
   assert.equal(ctx.sent[0].content.type, "effect");
   assert.equal(ctx.sent[0].content.content.type, "markdown");
   assert.equal(ctx.sent[0].content.content.markdown, "ship it");
+});
+
+test("shows direct text animation usage when missing arguments", async () => {
+  const ctx = mockContext("/animate");
+
+  const handled = await handlePhotonDirectCommand(ctx);
+
+  assert.equal(handled, true);
+  assert.equal(ctx.sent.length, 1);
+  assert.equal(ctx.sent[0].content.type, "markdown");
+  assert.match(ctx.sent[0].content.markdown, /\/animate <name> <message>/);
 });

@@ -164,10 +164,11 @@ Use the terminal provider to prove OpenClaw routing before iMessage auth:
   respects that and leaves slash text as ordinary message content.
 - Photon also handles a few direct-only shortcuts before a model turn:
   `/doctor` or `/photon` returns Photon channel diagnostics, `/effects` lists
-  supported iMessage effects, `/apps` summarises direct-chat app affordances and
-  mini-app config readiness, and `/effect <name> <message>` sends a native
-  iMessage effect. Generic commands such as `/status` and `/help` deliberately
-  stay with OpenClaw's normal command runtime.
+  supported iMessage effects and text animations, `/apps` summarises
+  direct-chat app affordances and mini-app config readiness, `/effect <name>
+  <message>` sends a native bubble/screen effect, and `/animate <name>
+  <message>` sends an iOS text animation. Generic commands such as `/status`
+  and `/help` deliberately stay with OpenClaw's normal command runtime.
 - Inbound message ids are deduped in-memory for at-least-once stream replay.
 - If the Spectrum message stream ends or throws, the channel re-subscribes with
   capped exponential backoff.
@@ -270,6 +271,9 @@ Photon exposes Spectrum/iMessage-native behaviour through OpenClaw's shared
   default range is the whole message. Text animations go through Photon's
   lower-level advanced iMessage client because Spectrum exposes bubble/screen
   effects directly, but not text-effect ranges yet.
+- Direct chats can trigger the same whole-message text animations with
+  `/animate <name> <message>`. Use the action interface when phrase/range
+  targeting is needed.
 - Effects are available but are not the default normal-send behaviour. Use
   `sendWithEffect` only when the effect is intentional.
 - `poll` creates a native iMessage poll through Spectrum when remote iMessage

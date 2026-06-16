@@ -20,6 +20,17 @@ const EFFECT_ALIASES = [
   "echo",
 ];
 
+const TEXT_EFFECT_ALIASES = [
+  "big",
+  "small",
+  "shake",
+  "nod",
+  "explode",
+  "ripple",
+  "bloom",
+  "jitter",
+];
+
 type DirectCommandContext = {
   account: ResolvedPhotonAccount;
   cfg: any;
@@ -56,7 +67,7 @@ export function buildPhotonAppsSummary(account: ResolvedPhotonAccount): string {
     "Photon direct-chat apps",
     "",
     "- Native iMessage actions: read, reply, react, edit, unsend",
-    "- Effects: /effects, or /effect <name> <message>",
+    "- Effects: /effects, /effect <name> <message>, /animate <name> <message>",
     "- Attachments/voice: available through OpenClaw media replies and upload-file",
     "- Mini-app cards: sendMiniApp / mini-app action",
     `- ${miniAppDefaultsStatus(account)}`,
@@ -86,9 +97,14 @@ export function buildPhotonEffectsSummary(): string {
   return [
     "Photon iMessage effects",
     "",
+    "Bubble and screen effects:",
     EFFECT_ALIASES.join(", "),
     "",
+    "Text animations:",
+    TEXT_EFFECT_ALIASES.join(", "),
+    "",
     "Use: /effect <name> <message>",
+    "Use: /animate <name> <message>",
   ].join("\n");
 }
 
@@ -119,6 +135,33 @@ async function sendEffectCommand(ctx: DirectCommandContext, args: string): Promi
   });
 }
 
+async function sendTextAnimationCommand(ctx: DirectCommandContext, args: string): Promise<void> {
+  const [textEffectName, ...messageParts] = args.trim().split(/\s+/);
+  const text = messageParts.join(" ").trim();
+  if (!textEffectName || !text) {
+    await replyPhotonText(ctx.message, ctx.space, "Use: /animate <name> <message>");
+    return;
+  }
+
+  const actions = createPhotonMessageActions(new Map([[ctx.account.accountId, ctx.running]]));
+  await actions.handleAction({
+    action: "sendWithEffect",
+    cfg: ctx.cfg,
+    accountId: ctx.account.accountId,
+    params: {
+      to: ctx.normalized.spaceId,
+      textEffect: textEffectName,
+      message: text,
+    },
+    senderIsOwner: true,
+    toolContext: {
+      currentChannelId: ctx.normalized.spaceId,
+      currentMessageId: ctx.normalized.messageId,
+      currentChannelProvider: CHANNEL_ID,
+    },
+  });
+}
+
 export async function handlePhotonDirectCommand(ctx: DirectCommandContext): Promise<boolean> {
   if (ctx.normalized.chatType !== "direct") return false;
   const command = parseDirectCommand(ctx.normalized.rawBody);
@@ -138,8 +181,11 @@ export async function handlePhotonDirectCommand(ctx: DirectCommandContext): Prom
     case "effect":
       await sendEffectCommand(ctx, command.args);
       return true;
+    case "animate":
+    case "animation":
+      await sendTextAnimationCommand(ctx, command.args);
+      return true;
     default:
       return false;
   }
 }
-
