@@ -58,6 +58,7 @@ const PhotonAccountSchema = z
     typingIndicators: z.boolean().optional(),
     progressUpdates: z.boolean().optional().default(true),
     dispatchControlEvents: z.boolean().optional().default(false),
+    dispatchPollVotes: z.boolean().optional().default(true),
     nativeActions: z.boolean().optional().default(true),
     dangerousNativeActions: z.boolean().optional().default(false),
     miniAppDefaults: z
@@ -131,6 +132,7 @@ export function resolveAccount(cfg: any, accountId?: string | null): ResolvedPho
     typingIndicators: raw.typingIndicators ?? raw.progressUpdates ?? true,
     progressUpdates: raw.typingIndicators ?? raw.progressUpdates ?? true,
     dispatchControlEvents: raw.dispatchControlEvents ?? false,
+    dispatchPollVotes: raw.dispatchPollVotes ?? true,
     nativeActions: raw.nativeActions ?? true,
     dangerousNativeActions: raw.dangerousNativeActions ?? false,
     miniAppDefaults: raw.miniAppDefaults ?? {},

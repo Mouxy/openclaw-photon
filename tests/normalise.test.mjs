@@ -6,6 +6,7 @@ import {
   createPhotonTypingRefresher,
   isPhotonControlEventContent,
   normalizePhotonInbound,
+  shouldIgnorePhotonControlEvent,
 } from "../dist/src/inbound.js";
 
 test("normalizes a text message", () => {
@@ -86,6 +87,18 @@ test("classifies lightweight iMessage control events separately from messages", 
       items: [{ content: { type: "reaction", emoji: "👍" } }],
     }),
     false,
+  );
+});
+
+test("lets selected poll votes wake the agent while suppressing noisy controls", () => {
+  const account = { dispatchControlEvents: false, dispatchPollVotes: true };
+
+  assert.equal(shouldIgnorePhotonControlEvent(account, { type: "typing" }), true);
+  assert.equal(shouldIgnorePhotonControlEvent(account, { type: "poll_option", title: "Choice", selected: true }), false);
+  assert.equal(shouldIgnorePhotonControlEvent(account, { type: "poll_option", title: "Choice", selected: false }), true);
+  assert.equal(
+    shouldIgnorePhotonControlEvent({ dispatchControlEvents: false, dispatchPollVotes: false }, { type: "poll_option", title: "Choice", selected: true }),
+    true,
   );
 });
 

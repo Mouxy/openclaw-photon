@@ -182,6 +182,21 @@ export function isPhotonControlEventContent(content: any): boolean {
   }
 }
 
+export function shouldIgnorePhotonControlEvent(account: Pick<ResolvedPhotonAccount, "dispatchControlEvents" | "dispatchPollVotes">, content: any): boolean {
+  if (account.dispatchControlEvents) return false;
+  const type = contentType(content);
+  switch (type) {
+    case "typing":
+      return true;
+    case "poll_option":
+      return !account.dispatchPollVotes || content?.selected !== true;
+    case "group":
+      return Array.isArray(content.items) && content.items.every((item: any) => shouldIgnorePhotonControlEvent(account, item?.content ?? item));
+    default:
+      return false;
+  }
+}
+
 function mediaKindFromMime(mimeType: string | undefined, contentType: string): ChannelInboundMediaInput["kind"] {
   const lower = String(mimeType ?? "").toLowerCase();
   if (contentType === "voice" || lower.startsWith("audio/")) return "audio";
@@ -499,7 +514,7 @@ export async function handlePhotonInbound(params: {
     });
     return { accepted: false, reason: "outbound echo", normalized };
   }
-  if (!account.dispatchControlEvents && isPhotonControlEventContent(message.content)) {
+  if (isPhotonControlEventContent(message.content) && shouldIgnorePhotonControlEvent(account, message.content)) {
     const reason = `control event ${contentType(message.content) ?? "unknown"}`;
     updatePhotonDelivery(account.accountId, deliveryId, {
       status: "ignored",

@@ -22,6 +22,7 @@ OpenClaw's channel runtime.
       "sendReadReceipts": true,
       "typingIndicators": true,
       "dispatchControlEvents": false,
+      "dispatchPollVotes": true,
       "maxInboundAttachmentBytes": 20971520,
       "maxOutboundAttachmentBytes": 52428800,
       "nativeActions": true,
@@ -61,6 +62,7 @@ The intended production profile is cloud iMessage through Photon/Spectrum:
       "sendReadReceipts": true,
       "typingIndicators": true,
       "dispatchControlEvents": false,
+      "dispatchPollVotes": true,
       "nativeActions": true,
       "dangerousNativeActions": false,
       "maxInboundAttachmentBytes": 20971520,
@@ -92,9 +94,13 @@ agent:
   visible tool/progress chatter so the chat only gets the final reply.
   `progressUpdates` remains a backwards-compatible alias for older configs.
 - `dispatchControlEvents=false` records noisy lightweight controls such as
-  typing and poll votes without starting a fresh agent turn. Tapbacks and
-  unsends are surfaced as normal inbound context because they are deliberate
-  user-visible message events.
+  typing without starting a fresh agent turn. Tapbacks and unsends are surfaced
+  as normal inbound context because they are deliberate user-visible message
+  events.
+- `dispatchPollVotes=true` lets selected iMessage poll options start an agent
+  turn while still suppressing poll deselection noise. This makes native polls a
+  practical picker/choice interface. Set it to `false` when polls should remain
+  passive telemetry only.
 - `maxInboundAttachmentBytes=20971520` (20 MiB) limits inbound media cached into
   OpenClaw's media store. `maxOutboundAttachmentBytes=52428800` (50 MiB)
   rejects oversized local outbound files and buffers before handoff to Spectrum.
@@ -243,8 +249,10 @@ iMessage like a plain-text bot channel.
   subsequent chat activity.
 - Tapbacks and unsends are recognised and surfaced as normal inbound context,
   for example `[Reaction: ❤️]` or `[Message unsent]`.
-- Noisy lightweight control events such as typing and poll votes are recognised
-  but do not trigger a fresh agent turn unless `dispatchControlEvents=true`.
+- Noisy lightweight control events such as typing are recognised but do not
+  trigger a fresh agent turn unless `dispatchControlEvents=true`. Selected poll
+  votes are the exception when `dispatchPollVotes=true`, so native polls can act
+  as picker-style choices.
 - In group chats with `requireMention=true`, a leading wake word is stripped
   before the prompt reaches the agent, so `@Assistant, check this` becomes
   `check this`.

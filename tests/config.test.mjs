@@ -14,6 +14,7 @@ test("resolves safe defaults", () => {
   assert.equal(account.maxInboundAttachmentBytes, 20 * 1024 * 1024);
   assert.equal(account.maxOutboundAttachmentBytes, 50 * 1024 * 1024);
   assert.equal(account.dispatchControlEvents, false);
+  assert.equal(account.dispatchPollVotes, true);
 });
 
 test("can disable long-turn typing indicators with the clearer config name", () => {

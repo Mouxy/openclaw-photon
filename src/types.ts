@@ -44,6 +44,7 @@ export interface PhotonAccountConfig {
   typingIndicators?: boolean;
   progressUpdates?: boolean;
   dispatchControlEvents?: boolean;
+  dispatchPollVotes?: boolean;
   nativeActions?: boolean;
   dangerousNativeActions?: boolean;
   miniAppDefaults?: PhotonMiniAppDefaults;
@@ -71,6 +72,7 @@ export interface ResolvedPhotonAccount {
   typingIndicators: boolean;
   progressUpdates: boolean;
   dispatchControlEvents: boolean;
+  dispatchPollVotes: boolean;
   nativeActions: boolean;
   dangerousNativeActions: boolean;
   miniAppDefaults: PhotonMiniAppDefaults;
