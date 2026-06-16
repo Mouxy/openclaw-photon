@@ -216,6 +216,110 @@ function standaloneUrl(body: string): string | undefined {
   }
 }
 
+function stripTrailingHeadingMarkers(value: string): string {
+  return value.replace(/\s+#+\s*$/, "").trim();
+}
+
+function isDividerTableRow(line: string): boolean {
+  const cells = line
+    .trim()
+    .replace(/^\|/, "")
+    .replace(/\|$/, "")
+    .split("|")
+    .map((cell) => cell.trim());
+  return cells.length > 0 && cells.every((cell) => /^:?-{3,}:?$/.test(cell));
+}
+
+function parseTableRow(line: string): string[] | undefined {
+  const trimmed = line.trim();
+  if (!trimmed.includes("|") || trimmed.startsWith("http://") || trimmed.startsWith("https://")) return undefined;
+  const cells = trimmed
+    .replace(/^\|/, "")
+    .replace(/\|$/, "")
+    .split("|")
+    .map((cell) => cell.trim())
+    .filter((cell) => cell.length > 0);
+  return cells.length >= 2 ? cells : undefined;
+}
+
+function tableToMessageLines(lines: string[], start: number): { lines: string[]; next: number } | undefined {
+  const headers = parseTableRow(lines[start] ?? "");
+  if (!headers || !isDividerTableRow(lines[start + 1] ?? "")) return undefined;
+
+  const rows: string[][] = [];
+  let next = start + 2;
+  while (next < lines.length) {
+    const row = parseTableRow(lines[next] ?? "");
+    if (!row || isDividerTableRow(lines[next] ?? "")) break;
+    rows.push(row);
+    next += 1;
+  }
+  if (rows.length === 0) return undefined;
+
+  const rendered = rows.map((row) => {
+    const fields = headers.map((header, index) => {
+      const value = row[index]?.trim();
+      return value ? `**${header}:** ${value}` : "";
+    }).filter(Boolean);
+    return `- ${fields.join("; ")}`;
+  });
+  return { lines: rendered, next };
+}
+
+export function formatPhotonMessageBody(body: string): string {
+  const normalised = body.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
+  if (!normalised) return "";
+
+  const sourceLines = normalised.split("\n");
+  const output: string[] = [];
+  let inFence = false;
+
+  for (let i = 0; i < sourceLines.length; i += 1) {
+    const line = sourceLines[i]!;
+    const trimmed = line.trim();
+
+    if (/^```/.test(trimmed)) {
+      inFence = !inFence;
+      output.push(line);
+      continue;
+    }
+
+    if (inFence) {
+      output.push(line);
+      continue;
+    }
+
+    const table = tableToMessageLines(sourceLines, i);
+    if (table) {
+      if (output.at(-1) && output.at(-1) !== "") output.push("");
+      output.push(...table.lines);
+      i = table.next - 1;
+      continue;
+    }
+
+    const heading = trimmed.match(/^(#{1,6})\s+(.+)$/);
+    if (heading) {
+      if (output.at(-1) && output.at(-1) !== "") output.push("");
+      output.push(`**${stripTrailingHeadingMarkers(heading[2] ?? "")}**`);
+      continue;
+    }
+
+    const task = line.match(/^(\s*)[-*]\s+\[([ xX])\]\s+(.+)$/);
+    if (task) {
+      const marker = task[2]?.toLowerCase() === "x" ? "Done" : "Todo";
+      output.push(`${task[1] ?? ""}- ${marker}: ${task[3] ?? ""}`);
+      continue;
+    }
+
+    output.push(line.replace(/[ \t]+$/g, ""));
+  }
+
+  return output
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 export function buildPhotonContents(
   body: string,
   mediaUrls: string[] = [],
@@ -240,7 +344,7 @@ export function buildPhotonContents(
     }
   }
 
-  const trimmedBody = body.trim();
+  const trimmedBody = formatPhotonMessageBody(body);
   const fallbackMediaText = unsupportedMedia.length
     ? `\n\n${unsupportedMedia.map((url) => `[Attachment: ${url}]`).join("\n")}`
     : "";

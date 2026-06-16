@@ -25,6 +25,7 @@
     "test": "npm run build && node --test tests/*.test.mjs"
   },
   "dependencies": {
+    "@photon-ai/advanced-imessage": "^0.11.2",
     "openclaw": "^2026.6.1",
     "spectrum-ts": "^4.2.0",
     "zod": "^4.3.6"

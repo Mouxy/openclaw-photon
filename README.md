@@ -98,8 +98,8 @@ agent:
 - `maxInboundAttachmentBytes=20971520` (20 MiB) limits inbound media cached into
   OpenClaw's media store. `maxOutboundAttachmentBytes=52428800` (50 MiB)
   rejects oversized local outbound files and buffers before handoff to Spectrum.
-- iMessage effects are available through `sendWithEffect`, but normal sends do
-  not use effects by default.
+- iMessage bubble/screen effects and iOS text animations are available through
+  `sendWithEffect`, but normal sends do not use effects by default.
 - `miniAppDefaults` is optional. Use it only when you have real iMessage app
   extension metadata you want Photon to reuse for direct-chat mini-app cards.
   String fields can include `{{runId}}`, `{{phase}}`, `{{step}}`, `{{result}}`,
@@ -205,6 +205,14 @@ iMessage like a plain-text bot channel.
 - Text replies are sent as Spectrum `markdown(...)` so bold, lists, code, and
   markdown links can be rendered as rich iMessage content where the provider
   supports it.
+- Before sending, Photon runs outbound text through a small iMessage
+  presentation pass:
+  - Markdown headings become compact bold lines instead of oversized document
+    headings.
+  - Pipe tables become short bullet rows, because iMessage bubbles handle
+    tables poorly.
+  - Task-list checkboxes become readable `Done:` / `Todo:` bullets.
+  - Fenced code blocks are left untouched.
 - Standalone URL replies are sent as Spectrum `richlink(...)` so iMessage can
   render a native preview card.
 - Reply payload media is sent as Spectrum `attachment(...)` for HTTP(S) URLs
@@ -255,6 +263,13 @@ Photon exposes Spectrum/iMessage-native behaviour through OpenClaw's shared
 - `sendWithEffect` sends text with iMessage effects such as `slam`, `loud`,
   `gentle`, `invisible`, `confetti`, `fireworks`, `balloons`, `heart`,
   `lasers`, `celebration`, `sparkles`, `spotlight`, or `echo`.
+- `sendWithEffect` can also send iOS text animations by passing `textEffect`
+  instead of `effect`. Supported text effects are `big`, `small`, `shake`,
+  `nod`, `explode`, `ripple`, `bloom`, and `jitter`. Pass `phrase` to animate
+  one matching phrase, or `start`/`length` to target a UTF-16 text range; the
+  default range is the whole message. Text animations go through Photon's
+  lower-level advanced iMessage client because Spectrum exposes bubble/screen
+  effects directly, but not text-effect ranges yet.
 - Effects are available but are not the default normal-send behaviour. Use
   `sendWithEffect` only when the effect is intentional.
 - `poll` creates a native iMessage poll through Spectrum when remote iMessage
@@ -310,7 +325,9 @@ OpenClaw gateway action routing, or Photon state recovery:
 - Edit: `edit` against an outbound message id. Retest after restart.
 - Unsend: `unsend`/`delete` against an outbound message id. Retest after
   restart.
-- Effects: `sendWithEffect` with each effect family that matters.
+- Effects: `sendWithEffect` with each bubble/screen effect family that matters.
+- Text animations: `sendWithEffect` with `textEffect=big|small|shake|nod|explode|ripple|bloom|jitter`
+  and a `phrase` or explicit `start`/`length`.
 - Poll: `poll` with a question and at least two options.
 - Group rename/icon/background: `renameGroup`, `setGroupIcon`,
   `setBackground`. These are owner-gated by default because they change shared
@@ -326,8 +343,9 @@ OpenClaw gateway action routing, or Photon state recovery:
   reactions, threaded replies, group creation, chat background, chat rename, or
   group avatar support.
 - iMessage effects, chat rename/avatar/background, mini-app cards, and read
-  receipts are supported by Spectrum. Effects, chat rename/avatar, reactions,
-  edits, unsends, polls, replies, uploads, backgrounds, mini-app cards, and read
-  receipts are exposed through the shared message action adapter.
+  receipts are supported by Spectrum. Effects, iOS text animations, chat
+  rename/avatar, reactions, edits, unsends, polls, replies, uploads,
+  backgrounds, mini-app cards, and read receipts are exposed through the shared
+  message action adapter.
 - Group cold-send still needs an inbound message to warm the space cache unless
   a dedicated Spectrum route can resolve the group by id.

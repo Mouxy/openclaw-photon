@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { createClient, TextEffect, type AdvancedIMessage, type Message as AdvancedIMessageMessage } from "@photon-ai/advanced-imessage";
 import {
   attachment,
+  cloud,
   edit as editContent,
   markdown,
   poll,
@@ -104,6 +106,17 @@ const EFFECTS: Record<string, string> = {
   sparkles: "com.apple.messages.effect.CKSparklesEffect",
   spotlight: "com.apple.messages.effect.CKSpotlightEffect",
   echo: "com.apple.messages.effect.CKEchoEffect",
+};
+
+const TEXT_EFFECTS: Record<string, string> = {
+  big: TextEffect.big,
+  small: TextEffect.small,
+  shake: TextEffect.shake,
+  nod: TextEffect.nod,
+  explode: TextEffect.explode,
+  ripple: TextEffect.ripple,
+  bloom: TextEffect.bloom,
+  jitter: TextEffect.jitter,
 };
 
 function jsonActionResult(data: Record<string, unknown>): AgentToolResult {
@@ -325,6 +338,133 @@ function effectId(raw: string | undefined): string {
     );
   }
   return resolved;
+}
+
+function textEffectId(raw: string | undefined): string | undefined {
+  const value = raw?.trim();
+  if (!value) return undefined;
+  const resolved = TEXT_EFFECTS[value.toLowerCase()];
+  if (!resolved) {
+    throw new Error("Photon textEffect supports: big, small, shake, nod, explode, ripple, bloom, jitter.");
+  }
+  return resolved;
+}
+
+function textEffectRange(text: string, params: Record<string, unknown>): { start: number; length: number; phrase?: string } {
+  const phrase = readString(params, "phrase", "textEffectPhrase", "text_effect_phrase", "highlight");
+  if (phrase) {
+    const start = text.indexOf(phrase);
+    if (start < 0) throw new Error(`Photon textEffect phrase was not found in message: ${phrase}`);
+    return { start, length: phrase.length, phrase };
+  }
+
+  const rawStart = readNumber(params, "start", "rangeStart", "range_start", "textEffectStart", "text_effect_start");
+  const rawLength = readNumber(params, "length", "rangeLength", "range_length", "textEffectLength", "text_effect_length");
+  const start = rawStart == null ? 0 : Math.trunc(rawStart);
+  const length = rawLength == null ? text.length - start : Math.trunc(rawLength);
+  if (start < 0 || length <= 0 || start + length > text.length) {
+    throw new Error(`Photon textEffect range is outside the message bounds: start=${start}, length=${length}.`);
+  }
+  return { start, length };
+}
+
+function advancedChatId(space: Space): string {
+  const id = String(space.id ?? "").trim();
+  if (!id) throw new Error("Photon textEffect could not resolve an iMessage chat id.");
+  return id;
+}
+
+function advancedSpacePhone(space: Space): string | undefined {
+  const phone = String((space as any).phone ?? "").trim();
+  return phone || undefined;
+}
+
+async function withAdvancedIMessageClient<T>(
+  account: ResolvedPhotonAccount,
+  space: Space,
+  fn: (client: AdvancedIMessage) => Promise<T>,
+): Promise<T> {
+  if (account.local) throw new Error("Photon textEffect requires remote/cloud iMessage mode.");
+  if (!account.projectId || !account.projectSecret) {
+    throw new Error("Photon textEffect requires Photon projectId/projectSecret credentials.");
+  }
+
+  const tokenData: any = await cloud.issueImessageTokens(account.projectId, account.projectSecret);
+  const clients: Array<{ phone: string; client: AdvancedIMessage }> = [];
+
+  if (tokenData.type === "shared") {
+    const address = process.env.SPECTRUM_IMESSAGE_ADDRESS ?? "imessage.spectrum.photon.codes:443";
+    clients.push({
+      phone: "shared",
+      client: createClient({ address, tls: true, token: async () => tokenData.token }),
+    });
+  } else {
+    const auth = tokenData.auth ?? {};
+    const numbers = tokenData.numbers ?? {};
+    for (const [instanceId, token] of Object.entries(auth)) {
+      const phone = String(numbers[instanceId] ?? "");
+      if (!phone) continue;
+      clients.push({
+        phone,
+        client: createClient({
+          address: `${instanceId}.imsg.photon.codes:443`,
+          tls: true,
+          token: async () => String(token),
+        }),
+      });
+    }
+  }
+
+  if (clients.length === 0) throw new Error("Photon textEffect could not create an advanced iMessage client.");
+  const phone = advancedSpacePhone(space);
+  const entry = clients.length === 1 || clients[0]?.phone === "shared"
+    ? clients[0]
+    : clients.find((candidate) => candidate.phone === phone);
+  if (!entry) {
+    throw new Error(`Photon textEffect could not find a client for phone ${phone ?? "<unknown>"}.`);
+  }
+
+  try {
+    return await fn(entry.client);
+  } finally {
+    await Promise.allSettled(clients.map(({ client }) => client.close()));
+  }
+}
+
+function advancedMessageToSpectrumMessage(space: Space, message: AdvancedIMessageMessage, text: string): Message {
+  return {
+    id: message.guid,
+    platform: "iMessage",
+    direction: "outbound",
+    sender: { id: "agent" },
+    content: { type: "text", text },
+    timestamp: message.dateCreated ?? new Date(),
+    space,
+  } as Message;
+}
+
+async function sendTextEffectMessage(params: {
+  account: ResolvedPhotonAccount;
+  running: RunningPhotonAccount;
+  space: Space;
+  text: string;
+  textEffect: string;
+  range: { start: number; length: number; phrase?: string };
+}): Promise<Message> {
+  const { account, running, space, text, textEffect, range } = params;
+  const sent = await withAdvancedIMessageClient(account, space, (client) =>
+    client.messages.sendText(advancedChatId(space), text, {
+      formatting: [{
+        type: "effect",
+        start: range.start,
+        length: range.length,
+        effect: textEffect as any,
+      }],
+    }),
+  );
+  const message = advancedMessageToSpectrumMessage(space, sent, text);
+  rememberPhotonMessage(running, space, message);
+  return message;
 }
 
 function assertNativeActions(account: ResolvedPhotonAccount): void {
@@ -721,6 +861,19 @@ export function createPhotonMessageActions(runningAccounts: Map<string, RunningP
         const text = textParam(ctx.params);
         if (!text) throw new Error("Photon sendWithEffect requires message/text/content.");
         const space = await resolveActionSpace({ ctx, account, running });
+        const textEffect = textEffectId(readString(ctx.params, "textEffect", "text_effect", "animation", "textAnimation", "text_animation"));
+        if (textEffect) {
+          const effectText = text.slice(0, account.textChunkLimit);
+          const range = textEffectRange(effectText, ctx.params);
+          const sent = await sendTextEffectMessage({ account, running, space, text: effectText, textEffect, range });
+          return actionResult(action, {
+            messageId: sent.id,
+            messageIds: [sent.id],
+            textEffect,
+            range,
+            textEffectMessageId: sent.id,
+          }, space);
+        }
         const sent = await sendContent(
           space,
           running,

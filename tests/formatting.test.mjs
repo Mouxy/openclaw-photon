@@ -7,13 +7,42 @@ import { test } from "node:test";
 
 process.env.OPENCLAW_HOME = mkdtempSync(path.join(tmpdir(), "photon-formatting-"));
 
-import { buildPhotonContents, normalizeOutboundTarget, sendPhotonRich, sendPhotonText } from "../dist/src/spectrum.js";
+import { buildPhotonContents, formatPhotonMessageBody, normalizeOutboundTarget, sendPhotonRich, sendPhotonText } from "../dist/src/spectrum.js";
 
 test("builds markdown content for iMessage rich text", async () => {
   const [content] = buildPhotonContents("**hello** [site](https://example.com)");
   const built = await content.build();
   assert.equal(built.type, "markdown");
   assert.equal(built.markdown, "**hello** [site](https://example.com)");
+});
+
+test("formats markdown headings as compact iMessage text", () => {
+  assert.equal(
+    formatPhotonMessageBody("## Result\n\nDone."),
+    "**Result**\n\nDone.",
+  );
+});
+
+test("formats markdown tables as iMessage-friendly bullet rows", async () => {
+  const [content] = buildPhotonContents(`
+| Check | Status | Detail |
+| --- | --- | --- |
+| Photon | OK | iMessage works |
+| Telegram | OK | connected |
+`);
+  const built = await content.build();
+  assert.equal(built.type, "markdown");
+  assert.equal(
+    built.markdown,
+    "- **Check:** Photon; **Status:** OK; **Detail:** iMessage works\n- **Check:** Telegram; **Status:** OK; **Detail:** connected",
+  );
+});
+
+test("leaves fenced code blocks untouched while formatting surrounding text", () => {
+  assert.equal(
+    formatPhotonMessageBody("### Command\n\n```bash\n| not | a | table |\n```\n\n- [x] verified"),
+    "**Command**\n\n```bash\n| not | a | table |\n```\n\n- Done: verified",
+  );
 });
 
 test("builds attachment content for http media", async () => {

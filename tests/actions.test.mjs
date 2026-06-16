@@ -397,6 +397,41 @@ test("handles read, edit, unsend, effect, poll, aliases, and owner-gated rename"
   );
 });
 
+test("routes iOS text animations through the sendWithEffect textEffect option", async () => {
+  const { running } = mockRunning();
+  const actions = createPhotonMessageActions(new Map([["default", running]]));
+
+  await assert.rejects(
+    actions.handleAction({
+      action: "sendWithEffect",
+      cfg: cfg({ projectIdEnv: "PHOTON_TEST_MISSING_PROJECT_ID", projectSecretEnv: "PHOTON_TEST_MISSING_PROJECT_SECRET" }),
+      params: { to: "space-1", message: "This is amazing", textEffect: "bloom", phrase: "amazing" },
+      senderIsOwner: true,
+    }),
+    /projectId\/projectSecret/,
+  );
+
+  await assert.rejects(
+    actions.handleAction({
+      action: "sendWithEffect",
+      cfg: cfg({ projectId: "project", projectSecret: "secret" }),
+      params: { to: "space-1", message: "This is amazing", textEffect: "wobble" },
+      senderIsOwner: true,
+    }),
+    /big, small, shake, nod, explode, ripple, bloom, jitter/,
+  );
+
+  await assert.rejects(
+    actions.handleAction({
+      action: "sendWithEffect",
+      cfg: cfg({ projectId: "project", projectSecret: "secret" }),
+      params: { to: "space-1", message: "This is amazing", textEffect: "shake", phrase: "missing" },
+      senderIsOwner: true,
+    }),
+    /phrase was not found/,
+  );
+});
+
 test("uses direction-aware latest message defaults for direct actions", async () => {
   const { running } = mockRunning();
   const inbound = running.messages.get("msg-1");
