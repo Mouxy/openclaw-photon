@@ -1,9 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { basename } from "node:path";
 import { createClient, TextEffect, type AdvancedIMessage, type Message as AdvancedIMessageMessage } from "@photon-ai/advanced-imessage";
 import {
   attachment,
   cloud,
+  contact as contactContent,
   edit as editContent,
   markdown,
   poll,
@@ -70,17 +72,35 @@ const SAFE_ACTIONS = [
   "photonDoctor",
   "sendMiniApp",
   "sendStatusCard",
+  "sendContact",
 ] as const;
 
 const DANGEROUS_ACTIONS = ["renameGroup", "setGroupIcon", "setBackground"] as const;
+const OWNER_GATED_ADVANCED_ACTIONS = [
+  "addPollOption",
+  "pollVote",
+  "pollUnvote",
+  "placeSticker",
+  "requestLocation",
+  "notifyAnyway",
+] as const;
 const SUPPORTED_ACTIONS = new Set<string>([
   ...SAFE_ACTIONS,
   ...DANGEROUS_ACTIONS,
+  ...OWNER_GATED_ADVANCED_ACTIONS,
   "sendAttachment",
   "sendCustomizedMiniApp",
   "sendStatusCard",
+  "contact",
+  "shareContact",
+  "shareContactInfo",
   "status-card",
   "mini-app",
+  "pollAddOption",
+  "votePoll",
+  "unvotePoll",
+  "sticker",
+  "locationRequest",
   "delete",
   "thread-reply",
   "topic-edit",
@@ -473,7 +493,7 @@ function assertNativeActions(account: ResolvedPhotonAccount): void {
 }
 
 function assertDangerousAllowed(ctx: ActionContext, account: ResolvedPhotonAccount): void {
-  if (!DANGEROUS_ACTIONS.includes(ctx.action as any)) return;
+  if (!DANGEROUS_ACTIONS.includes(ctx.action as any) && !OWNER_GATED_ADVANCED_ACTIONS.includes(ctx.action as any)) return;
   if (account.dangerousNativeActions || ctx.senderIsOwner === true) return;
   throw new Error(`Photon ${ctx.action} is restricted to the owner unless dangerousNativeActions=true.`);
 }
@@ -580,6 +600,59 @@ function mediaParams(params: Record<string, unknown>): string[] {
 function bufferFromBase64(params: Record<string, unknown>): Buffer | undefined {
   const raw = readString(params, "buffer");
   return raw ? Buffer.from(raw, "base64") : undefined;
+}
+
+function clientMessageId(ctx: ActionContext, suffix: string): string {
+  const explicit = readString(ctx.params, "clientMessageId", "client_message_id", "idempotencyKey", "idempotency_key");
+  return explicit ?? `${ctx.action}:${suffix}:${randomUUID()}`;
+}
+
+function contactInput(params: Record<string, unknown>): Record<string, unknown> | string {
+  const raw = readString(params, "vcard", "vCard", "raw");
+  if (raw) return raw;
+  const formatted = readString(params, "name", "formattedName", "formatted_name", "fullName", "full_name");
+  const first = readString(params, "firstName", "first_name", "givenName", "given_name");
+  const last = readString(params, "lastName", "last_name", "familyName", "family_name");
+  const phoneValues = readStringArray(params, "phone", "phones", "phoneNumber", "phone_number");
+  const emailValues = readStringArray(params, "email", "emails", "emailAddress", "email_address");
+  const urlValues = readStringArray(params, "url", "urls", "website", "websites");
+  const organisation = readString(params, "org", "organization", "organisation", "company");
+  const title = readString(params, "title", "role", "jobTitle", "job_title");
+  const note = readString(params, "note", "notes");
+
+  if (!formatted && !first && !last && phoneValues.length === 0 && emailValues.length === 0) {
+    throw new Error("Photon sendContact requires a vCard, name, phone, or email.");
+  }
+
+  return {
+    ...(formatted || first || last ? { name: { formatted, first, last } } : {}),
+    ...(phoneValues.length ? { phones: phoneValues.map((value) => ({ value })) } : {}),
+    ...(emailValues.length ? { emails: emailValues.map((value) => ({ value })) } : {}),
+    ...(urlValues.length ? { urls: urlValues.map((value) => ({ value })) } : {}),
+    ...(organisation || title ? { org: { name: organisation, title } } : {}),
+    ...(note ? { note } : {}),
+  };
+}
+
+async function stickerBytes(params: Record<string, unknown>, account: ResolvedPhotonAccount): Promise<{ data: Uint8Array; fileName: string }> {
+  const buffer = bufferFromBase64(params);
+  if (buffer) {
+    assertOutboundMediaWithinLimits(buffer, account.maxOutboundAttachmentBytes);
+    return {
+      data: new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength),
+      fileName: readString(params, "filename", "fileName", "name") ?? "sticker.png",
+    };
+  }
+
+  const media = mediaParam(params);
+  if (!media) throw new Error("Photon placeSticker requires buffer or image/media/filePath/path.");
+  if (/^https?:\/\//i.test(media)) throw new Error("Photon placeSticker requires a local sticker image or base64 buffer.");
+  const guarded = assertOutboundMediaWithinLimits(media, account.maxOutboundAttachmentBytes) as string;
+  const bytes = await readFile(guarded);
+  return {
+    data: new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength),
+    fileName: readString(params, "filename", "fileName", "name") ?? basename(guarded),
+  };
 }
 
 async function miniAppImageBytes(params: Record<string, unknown>, account: ResolvedPhotonAccount): Promise<Uint8Array | undefined> {
@@ -705,6 +778,7 @@ export function createPhotonMessageActions(runningAccounts: Map<string, RunningP
       const actions = account.local ? ["edit", "unsend"] : [...SAFE_ACTIONS];
       if (!account.local && (account.dangerousNativeActions || senderIsOwner === true)) {
         actions.push(...DANGEROUS_ACTIONS);
+        actions.push(...OWNER_GATED_ADVANCED_ACTIONS);
       }
       return {
         actions,
@@ -713,6 +787,7 @@ export function createPhotonMessageActions(runningAccounts: Map<string, RunningP
           sendWithEffect: ["media", "mediaUrl", "filePath", "path", "fileUrl"],
           sendMiniApp: ["image", "imagePath", "filePath", "path"],
           sendStatusCard: ["image", "imagePath", "filePath", "path"],
+          placeSticker: ["image", "imagePath", "filePath", "path", "buffer"],
           setGroupIcon: ["image", "media", "mediaUrl", "filePath", "path", "fileUrl"],
           setBackground: ["background", "image", "media", "mediaUrl", "filePath", "path", "fileUrl"],
           "topic-edit": ["image", "media", "mediaUrl", "filePath", "path", "fileUrl"],
@@ -733,11 +808,26 @@ export function createPhotonMessageActions(runningAccounts: Map<string, RunningP
       reply: { aliases: ["target", "messageId"] },
       "thread-reply": { aliases: ["target", "messageId", "replyTo"] },
       sendWithEffect: { aliases: ["target"] },
+      sendContact: { aliases: ["target"] },
+      contact: { aliases: ["target"] },
+      shareContact: { aliases: ["target"] },
+      shareContactInfo: { aliases: ["target"] },
       sendMiniApp: { aliases: ["target"] },
       sendStatusCard: { aliases: ["target"] },
       sendCustomizedMiniApp: { aliases: ["target"] },
       "status-card": { aliases: ["target"] },
       "mini-app": { aliases: ["target"] },
+      addPollOption: { aliases: ["target", "messageId"] },
+      pollAddOption: { aliases: ["target", "messageId"] },
+      pollVote: { aliases: ["target", "messageId"] },
+      votePoll: { aliases: ["target", "messageId"] },
+      pollUnvote: { aliases: ["target", "messageId"] },
+      unvotePoll: { aliases: ["target", "messageId"] },
+      placeSticker: { aliases: ["target", "messageId"] },
+      sticker: { aliases: ["target", "messageId"] },
+      requestLocation: { aliases: ["target"] },
+      locationRequest: { aliases: ["target"] },
+      notifyAnyway: { aliases: ["target", "messageId"] },
       renameGroup: { aliases: ["target"] },
       setGroupIcon: { aliases: ["target"] },
       setBackground: { aliases: ["target"] },
@@ -753,6 +843,18 @@ export function createPhotonMessageActions(runningAccounts: Map<string, RunningP
             ? "sendMiniApp"
           : ctx.action === "status-card"
             ? "sendStatusCard"
+          : ctx.action === "contact" || ctx.action === "shareContact" || ctx.action === "shareContactInfo"
+            ? "sendContact"
+          : ctx.action === "pollAddOption"
+            ? "addPollOption"
+          : ctx.action === "votePoll"
+            ? "pollVote"
+          : ctx.action === "unvotePoll"
+            ? "pollUnvote"
+          : ctx.action === "sticker"
+            ? "placeSticker"
+          : ctx.action === "locationRequest"
+            ? "requestLocation"
           : ctx.action === "delete"
             ? "unsend"
             : ctx.action === "thread-reply"
@@ -903,6 +1005,79 @@ export function createPhotonMessageActions(runningAccounts: Map<string, RunningP
           question,
           optionCount: options.length,
         }, space);
+      }
+
+      if (action === "sendContact") {
+        const space = await resolveActionSpace({ ctx, account, running });
+        const sent = await sendContent(space, running, contactContent(contactInput(ctx.params) as any));
+        return actionResult(action, { messageId: sent?.id }, space);
+      }
+
+      if (action === "addPollOption" || action === "pollVote" || action === "pollUnvote") {
+        const pollMessageId = readString(ctx.params, "pollMessageId", "poll_message_id", "pollId", "poll_id") ?? explicitMessageId(ctx);
+        if (!pollMessageId) throw new Error(`Photon ${action} requires pollMessageId/messageId.`);
+        const space = await resolveActionSpace({ ctx, account, running, messageId: pollMessageId });
+        const pollState = await withAdvancedIMessageClient(account, space, (client) => {
+          if (action === "addPollOption") {
+            const text = readString(ctx.params, "option", "text", "title");
+            if (!text) throw new Error("Photon addPollOption requires option/text/title.");
+            return client.polls.addOption(pollMessageId, text, { clientMessageId: clientMessageId(ctx, pollMessageId) });
+          }
+          if (action === "pollVote") {
+            const optionId = readString(ctx.params, "optionId", "option_id", "choiceId", "choice_id");
+            if (!optionId) throw new Error("Photon pollVote requires optionId/choiceId.");
+            return client.polls.vote(pollMessageId, optionId, { clientMessageId: clientMessageId(ctx, pollMessageId) });
+          }
+          return client.polls.unvote(pollMessageId, { clientMessageId: clientMessageId(ctx, pollMessageId) });
+        });
+        return actionResult(action, {
+          pollMessageId: pollState.pollMessageGuid,
+          optionCount: pollState.options.length,
+          voteCount: pollState.votes.length,
+        }, space);
+      }
+
+      if (action === "placeSticker") {
+        const { space, messageId } = await resolveActionMessage({ ctx, account, running });
+        const sticker = await stickerBytes(ctx.params, account);
+        const placement = {
+          x: readNumber(ctx.params, "x") ?? 120,
+          y: readNumber(ctx.params, "y") ?? 90,
+          ...(readNumber(ctx.params, "width") != null ? { width: readNumber(ctx.params, "width") } : {}),
+          ...(readNumber(ctx.params, "scale") != null ? { scale: readNumber(ctx.params, "scale") } : {}),
+          ...(readNumber(ctx.params, "rotation") != null ? { rotation: readNumber(ctx.params, "rotation") } : {}),
+        };
+        const sent = await withAdvancedIMessageClient(account, space, async (client) => {
+          const uploaded = await client.attachments.upload(sticker);
+          return client.messages.placeSticker(
+            advancedChatId(space),
+            messageId,
+            uploaded.attachment.guid,
+            placement,
+            { clientMessageId: clientMessageId(ctx, messageId) },
+          );
+        });
+        const message = advancedMessageToSpectrumMessage(space, sent, "[Sticker placed]");
+        rememberPhotonMessage(running, space, message);
+        return actionResult(action, { messageId: message.id, sticker: sticker.fileName, targetMessageId: messageId }, space);
+      }
+
+      if (action === "requestLocation") {
+        const space = await resolveActionSpace({ ctx, account, running });
+        const address = readString(ctx.params, "address", "phone", "email", "contact");
+        if (!address) throw new Error("Photon requestLocation requires address/phone/email/contact.");
+        const receipt = await withAdvancedIMessageClient(account, space, (client) =>
+          client.locations.request(advancedChatId(space), address, { clientMessageId: clientMessageId(ctx, address) }),
+        );
+        return actionResult(action, { address: receipt.address, status: receipt.status, messageId: receipt.messageGuid }, space);
+      }
+
+      if (action === "notifyAnyway") {
+        const { space, messageId } = await resolveActionMessage({ ctx, account, running });
+        await withAdvancedIMessageClient(account, space, (client) =>
+          client.messages.notifySilenced(advancedChatId(space), messageId, { clientMessageId: clientMessageId(ctx, messageId) }),
+        );
+        return actionResult(action, { messageId }, space);
       }
 
       if (action === "sendMiniApp" || action === "sendStatusCard") {

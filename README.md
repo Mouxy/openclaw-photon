@@ -82,11 +82,12 @@ agent:
   reactions, read receipts, replies, edits, unsends, uploads, effects, polls,
   backgrounds, group controls, and mini-app cards through OpenClaw's shared
   `message` action surface.
-- `dangerousNativeActions=false` keeps disruptive shared-chat changes
-  owner-gated by default. Group rename/avatar/background are available to the
-  command owner, and become generally available only when this flag is
-  explicitly set to `true`. Mini-app cards are available for direct iMessage
-  chats; sending a mini-app card into a group remains owner-gated.
+- `dangerousNativeActions=false` keeps disruptive or user-affecting native
+  operations owner-gated by default. Group rename/avatar/background, advanced
+  poll mutation, sticker placement, location requests, and Notify Anyway are
+  available to the command owner, and become generally available only when this
+  flag is explicitly set to `true`. Mini-app cards are available for direct
+  iMessage chats; sending a mini-app card into a group remains owner-gated.
 - `sendReadReceipts=true` marks accepted inbound iMessages read best-effort in
   remote iMessage mode. Local mode does not send read receipts.
 - `typingIndicators=true` refreshes the iMessage typing indicator about every 10
@@ -284,8 +285,24 @@ Photon exposes Spectrum/iMessage-native behaviour through OpenClaw's shared
   targeting is needed.
 - Effects are available but are not the default normal-send behaviour. Use
   `sendWithEffect` only when the effect is intentional.
+- `sendContact` / `contact` / `shareContact` sends a native contact card using
+  Spectrum contact content. Pass a full `vCard`, or fields such as `name`,
+  `phone`, `email`, `url`, `org`, `title`, and `note`.
 - `poll` creates a native iMessage poll through Spectrum when remote iMessage
   mode supports it.
+- `addPollOption` / `pollAddOption`, `pollVote` / `votePoll`, and
+  `pollUnvote` / `unvotePoll` expose the lower-level advanced iMessage poll
+  management APIs. They require a `pollMessageId` or `messageId`; voting also
+  requires `optionId`. These are owner-gated by default because they mutate a
+  visible poll as the configured iMessage account.
+- `placeSticker` / `sticker` uploads a local sticker image or base64 `buffer`
+  and places it on a target message. It accepts `x`, `y`, and optional
+  `width`, `scale`, and `rotation`. It is owner-gated by default.
+- `requestLocation` / `locationRequest` sends Apple's visible Find My location
+  request card to `address`/`phone`/`email` in the target chat. It is
+  owner-gated by default.
+- `notifyAnyway` triggers Apple's Notify Anyway action for a Focus-silenced
+  target message. It is owner-gated by default and should be used sparingly.
 - `sendMiniApp` / `sendCustomizedMiniApp` / `mini-app` sends a Spectrum custom
   iMessage app card in direct chats. The card needs real iMessage extension
   metadata: `appName`, `teamId`, `extensionBundleId`, `url`, optional
@@ -340,7 +357,14 @@ OpenClaw gateway action routing, or Photon state recovery:
 - Effects: `sendWithEffect` with each bubble/screen effect family that matters.
 - Text animations: `sendWithEffect` with `textEffect=big|small|shake|nod|explode|ripple|bloom|jitter`
   and a `phrase` or explicit `start`/`length`.
+- Contact card: `sendContact` with a safe test contact or vCard.
 - Poll: `poll` with a question and at least two options.
+- Poll management: `addPollOption`, `pollVote`, and `pollUnvote` against a
+  known poll message id and option id.
+- Sticker placement: `placeSticker` against a known inbound/outbound message id
+  with a local small PNG.
+- Location request / Notify Anyway: verify only with explicit human intent,
+  because both generate visible Apple-side user-affecting actions.
 - Group rename/icon/background: `renameGroup`, `setGroupIcon`,
   `setBackground`. These are owner-gated by default because they change shared
   chat state.
@@ -354,10 +378,11 @@ OpenClaw gateway action routing, or Photon state recovery:
 - Local iMessage mode still has Spectrum's local-mode limits: no typing,
   reactions, threaded replies, group creation, chat background, chat rename, or
   group avatar support.
-- iMessage effects, chat rename/avatar/background, mini-app cards, and read
-  receipts are supported by Spectrum. Effects, iOS text animations, chat
-  rename/avatar, reactions, edits, unsends, polls, replies, uploads,
-  backgrounds, mini-app cards, and read receipts are exposed through the shared
-  message action adapter.
+- iMessage effects, contact cards, chat rename/avatar/background, mini-app
+  cards, and read receipts are supported by Spectrum. Effects, iOS text
+  animations, contact cards, chat rename/avatar, reactions, edits, unsends,
+  polls, poll management, sticker placement, location requests, Notify Anyway,
+  replies, uploads, backgrounds, mini-app cards, and read receipts are exposed
+  through the shared message action adapter.
 - Group cold-send still needs an inbound message to warm the space cache unless
   a dedicated Spectrum route can resolve the group by id.

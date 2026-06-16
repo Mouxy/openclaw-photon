@@ -335,6 +335,28 @@ test("advertises direct mini-app cards while owner-gating group controls", () =>
   });
   assert.equal(nonOwnerDescription.actions.includes("sendMiniApp"), true);
   assert.equal(nonOwnerDescription.actions.includes("setBackground"), false);
+  assert.equal(nonOwnerDescription.actions.includes("placeSticker"), false);
+  assert.equal(nonOwnerDescription.actions.includes("requestLocation"), false);
+});
+
+test("advertises owner-gated advanced iMessage actions to the owner", () => {
+  const { running } = mockRunning();
+  const actions = createPhotonMessageActions(new Map([["default", running]]));
+
+  const ownerDescription = actions.describeMessageTool({
+    cfg: cfg(),
+    accountId: "default",
+    senderIsOwner: true,
+  });
+
+  assert.ok(ownerDescription.actions.includes("sendContact"));
+  assert.ok(ownerDescription.actions.includes("addPollOption"));
+  assert.ok(ownerDescription.actions.includes("pollVote"));
+  assert.ok(ownerDescription.actions.includes("pollUnvote"));
+  assert.ok(ownerDescription.actions.includes("placeSticker"));
+  assert.ok(ownerDescription.actions.includes("requestLocation"));
+  assert.ok(ownerDescription.actions.includes("notifyAnyway"));
+  assert.ok(ownerDescription.mediaSourceParams.placeSticker.includes("image"));
 });
 
 test("handles read, edit, unsend, effect, poll, aliases, and owner-gated rename", async () => {
@@ -369,6 +391,11 @@ test("handles read, edit, unsend, effect, poll, aliases, and owner-gated rename"
       subcaption: "Rendered by iMessage",
     },
   });
+  await actions.handleAction({
+    ...base,
+    action: "sendContact",
+    params: { to: "space-1", name: "Example Person", phone: "+15555550123", email: "person@example.com" },
+  });
   await actions.handleAction({ ...base, action: "topic-edit", params: { to: "space-1", topic: "New Name" } });
   await actions.handleAction({ ...base, action: "delete", params: { to: "space-1", messageId: "out-1" } });
 
@@ -380,9 +407,11 @@ test("handles read, edit, unsend, effect, poll, aliases, and owner-gated rename"
   const effectMessage = sent.find((message) => message.content.type === "effect");
   const pollMessage = sent.find((message) => message.content.type === "poll");
   const miniAppMessage = sent.find((message) => message.content.type === "customized-mini-app");
+  const contactMessage = sent.find((message) => message.content.type === "contact");
   assert.equal(effectMessage.content.content.type, "markdown");
   assert.ok(pollMessage);
   assert.equal(miniAppMessage.content.layout.caption, "Native card");
+  assert.equal(contactMessage.content.name.formatted, "Example Person");
   assert.deepEqual(calls.at(-2), ["rename", "New Name"]);
   assert.deepEqual(calls.at(-1), ["unsend"]);
 
@@ -394,6 +423,57 @@ test("handles read, edit, unsend, effect, poll, aliases, and owner-gated rename"
       senderIsOwner: false,
     }),
     /restricted to the owner/,
+  );
+});
+
+test("owner-gates advanced iMessage mutation helpers", async () => {
+  const { running } = mockRunning();
+  const actions = createPhotonMessageActions(new Map([["default", running]]));
+
+  await assert.rejects(
+    actions.handleAction({
+      action: "requestLocation",
+      cfg: cfg(),
+      params: { to: "space-1", address: "+15555550123" },
+      senderIsOwner: false,
+    }),
+    /restricted to the owner/,
+  );
+
+  await assert.rejects(
+    actions.handleAction({
+      action: "placeSticker",
+      cfg: cfg(),
+      params: { to: "space-1", messageId: "msg-1", buffer: Buffer.from("fake").toString("base64") },
+      senderIsOwner: false,
+    }),
+    /restricted to the owner/,
+  );
+});
+
+test("advanced iMessage helpers require Photon project credentials in cloud mode", async () => {
+  const { running } = mockRunning();
+  const actions = createPhotonMessageActions(new Map([["default", running]]));
+  const missingCreds = cfg({ projectIdEnv: "PHOTON_TEST_MISSING_PROJECT_ID", projectSecretEnv: "PHOTON_TEST_MISSING_PROJECT_SECRET" });
+
+  await assert.rejects(
+    actions.handleAction({
+      action: "addPollOption",
+      cfg: missingCreds,
+      params: { to: "space-1", messageId: "msg-1", option: "Later" },
+      senderIsOwner: true,
+    }),
+    /projectId\/projectSecret/,
+  );
+
+  await assert.rejects(
+    actions.handleAction({
+      action: "notifyAnyway",
+      cfg: missingCreds,
+      params: { to: "space-1", messageId: "msg-1" },
+      senderIsOwner: true,
+    }),
+    /projectId\/projectSecret/,
   );
 });
 

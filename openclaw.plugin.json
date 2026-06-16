@@ -145,7 +145,7 @@
           },
           "dangerousNativeActions": {
             "default": false,
-            "description": "Allow disruptive group/background/mini-app actions for non-owners. False keeps them owner-gated.",
+            "description": "Allow disruptive or user-affecting native actions for non-owners. False keeps group/background changes, advanced poll mutation, stickers, location requests, and Notify Anyway owner-gated.",
             "type": "boolean"
           },
           "miniAppDefaults": {

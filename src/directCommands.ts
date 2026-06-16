@@ -68,6 +68,7 @@ export function buildPhotonAppsSummary(account: ResolvedPhotonAccount): string {
     "",
     "- Native iMessage actions: read, reply, react, edit, unsend",
     "- Effects: /effects, /effect <name> <message>, /animate <name> <message>",
+    "- Rich actions: contact cards, polls, poll management, stickers, location requests",
     "- Attachments/voice: available through OpenClaw media replies and upload-file",
     "- Mini-app cards: sendMiniApp / mini-app action",
     `- ${miniAppDefaultsStatus(account)}`,
