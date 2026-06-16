@@ -123,7 +123,7 @@ function contentToText(content: any, accountId?: string): string {
           : []),
       ].filter(Boolean).join("\n");
     case "poll_option":
-      return `[Poll vote: ${content.title ?? content.option?.title ?? "option"} ${content.selected ? "selected" : "cleared"}]`;
+      return `[Poll vote: ${content.title ?? content.option?.title ?? "option"} ${pollOptionStateLabel(content)}]`;
     case "reaction":
       return `[Reaction: ${content.emoji ?? "reaction"}]`;
     case "effect": {
@@ -177,6 +177,10 @@ function isSelectedPollOption(content: any): boolean {
     return ["true", "selected", "select", "add", "added"].includes(normalized);
   }
   return false;
+}
+
+function pollOptionStateLabel(content: any): string {
+  return isSelectedPollOption(content) ? "selected" : "cleared";
 }
 
 export function isPhotonControlEventContent(content: any): boolean {

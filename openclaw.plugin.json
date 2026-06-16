@@ -133,6 +133,11 @@
             "description": "Dispatch tapbacks, unsends, typing, poll votes, and similar controls into agent turns.",
             "type": "boolean"
           },
+          "dispatchPollVotes": {
+            "default": true,
+            "description": "Dispatch selected native iMessage poll options into agent turns while other lightweight control events stay suppressed.",
+            "type": "boolean"
+          },
           "nativeActions": {
             "default": true,
             "description": "Expose Spectrum/iMessage-native actions, including effects, through OpenClaw message actions.",

@@ -105,6 +105,42 @@ test("lets selected poll votes wake the agent while suppressing noisy controls",
   );
 });
 
+test("normalizes string poll selection states in the visible body", () => {
+  const base = {
+    account: { accountId: "default", mentionNames: ["Assistant"] },
+    space: { id: "chat-poll", type: "dm", __platform: "iMessage" },
+  };
+
+  assert.equal(
+    normalizePhotonInbound({
+      ...base,
+      message: {
+        id: "poll-selected",
+        platform: "iMessage",
+        direction: "inbound",
+        sender: { id: "user" },
+        content: { type: "poll_option", title: "Choice", selected: "selected" },
+        timestamp: new Date("2026-06-16T17:40:00Z"),
+      },
+    }).rawBody,
+    "[Poll vote: Choice selected]",
+  );
+  assert.equal(
+    normalizePhotonInbound({
+      ...base,
+      message: {
+        id: "poll-deselected",
+        platform: "iMessage",
+        direction: "inbound",
+        sender: { id: "user" },
+        content: { type: "poll_option", title: "Choice", selected: "deselected" },
+        timestamp: new Date("2026-06-16T17:40:00Z"),
+      },
+    }).rawBody,
+    "[Poll vote: Choice cleared]",
+  );
+});
+
 test("normalizes reactions as agent-visible inbound messages", () => {
   const result = normalizePhotonInbound({
     account: {
