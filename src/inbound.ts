@@ -4,12 +4,20 @@ import { issuePairingChallenge, readChannelAllowFromStore, upsertChannelPairingR
 import { saveMediaBuffer } from "openclaw/plugin-sdk/media-store";
 import { resolveOutboundMediaUrls } from "openclaw/plugin-sdk/reply-payload";
 import { readStoreAllowFromForDmPolicy } from "openclaw/plugin-sdk/security-runtime";
+import { execFile } from "node:child_process";
+import { readFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import path from "node:path";
+import { promisify } from "node:util";
 import { typing, type Message, type Space } from "spectrum-ts";
 import { imessage, read as imessageRead } from "spectrum-ts/providers/imessage";
 import { CHANNEL_ID, type PhotonNormalizedInbound, type ResolvedPhotonAccount, type RunningPhotonAccount } from "./types.js";
 import { handlePhotonDirectCommand } from "./directCommands.js";
 import { replyPhotonRich, replyPhotonText } from "./spectrum.js";
 import { notePhotonMediaError, notePhotonUnsupportedContent, rememberPhotonDelivery, updatePhotonDelivery } from "./state.js";
+
+const execFileAsync = promisify(execFile);
+const LOCAL_MESSAGES_ATTACHMENT_WINDOW_MS = 5 * 60 * 1000;
 
 function normalizeId(value: unknown): string {
   return String(value ?? "").trim();
@@ -236,6 +244,119 @@ function attachmentGuidCandidates(content: any): string[] {
   return [...new Set(candidates.map((value) => String(value ?? "").trim()).filter(Boolean))];
 }
 
+function sqlString(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
+function expandHome(value: string): string {
+  if (value === "~") return homedir();
+  if (value.startsWith("~/")) return path.join(homedir(), value.slice(2));
+  return value;
+}
+
+function basenameOrSelf(value: string): string {
+  const normalized = value.trim();
+  return path.basename(normalized) || normalized;
+}
+
+type LocalMessagesAttachmentCandidate = {
+  guid?: string;
+  transferName?: string;
+  filename?: string;
+  mimeType?: string;
+  totalBytes?: number;
+};
+
+async function findLocalMessagesAttachmentCandidate(params: {
+  label: string;
+  timestampMs: number;
+}): Promise<LocalMessagesAttachmentCandidate | undefined> {
+  const label = basenameOrSelf(params.label);
+  if (!label || label === "attachment" || label === "voice") return undefined;
+
+  const dbPath = path.join(homedir(), "Library/Messages/chat.db");
+  const timestampMs = Number.isFinite(params.timestampMs) ? params.timestampMs : Date.now();
+  const windowMs = LOCAL_MESSAGES_ATTACHMENT_WINDOW_MS;
+  const escapedLabel = sqlString(label);
+  const sql = `
+    select
+      a.guid as guid,
+      a.transfer_name as transferName,
+      a.filename as filename,
+      a.mime_type as mimeType,
+      a.total_bytes as totalBytes
+    from attachment a
+      join message_attachment_join maj on maj.attachment_id = a.ROWID
+      join message m on m.ROWID = maj.message_id
+    where
+      m.is_from_me = 0
+      and abs(((m.date / 1000000) + 978307200000) - ${Math.trunc(timestampMs)}) <= ${windowMs}
+      and (
+        a.transfer_name = ${escapedLabel}
+        or a.filename like ${sqlString(`%/${label}`)}
+      )
+    order by
+      abs(((m.date / 1000000) + 978307200000) - ${Math.trunc(timestampMs)}) asc,
+      m.date desc
+    limit 1
+  `;
+
+  try {
+    const { stdout } = await execFileAsync("/usr/bin/sqlite3", ["-json", dbPath, sql], { timeout: 3000, maxBuffer: 1024 * 1024 });
+    const rows = JSON.parse(stdout || "[]");
+    const row = Array.isArray(rows) ? rows[0] : undefined;
+    if (!row || typeof row !== "object") return undefined;
+    return row as LocalMessagesAttachmentCandidate;
+  } catch {
+    return undefined;
+  }
+}
+
+async function cacheLocalMessagesAttachment(params: {
+  account: ResolvedPhotonAccount;
+  content: any;
+  messageId: string;
+  timestampMs: number;
+  runtime: { log?: (message: string) => void; error?: (message: string) => void };
+  out: ChannelInboundMediaInput[];
+}): Promise<boolean> {
+  const { account, content, messageId, timestampMs, runtime, out } = params;
+  const label = attachmentLabel(content);
+  const candidate = await findLocalMessagesAttachmentCandidate({ label, timestampMs });
+  if (!candidate?.filename) return false;
+
+  const localPath = expandHome(candidate.filename);
+  try {
+      const buffer = await readFile(localPath);
+    if (buffer.length > account.maxInboundAttachmentBytes) {
+      runtime.log?.(
+        `photon: skipping oversized local Messages attachment ${JSON.stringify(label)} (${buffer.length} bytes)`,
+      );
+      return true;
+    }
+    const saved = await saveMediaBuffer(
+      buffer,
+      candidate.mimeType || undefined,
+      "photon-inbound",
+      account.maxInboundAttachmentBytes,
+      candidate.transferName || label,
+      candidate.transferName || label,
+    );
+    out.push({
+      path: saved.path,
+      contentType: saved.contentType || candidate.mimeType || undefined,
+      kind: mediaKindFromMime(saved.contentType || candidate.mimeType || undefined, content.type),
+      messageId: content.id || candidate.guid || messageId,
+    });
+    runtime.log?.(`photon: hydrated inbound attachment ${JSON.stringify(label)} from local Messages database`);
+    return true;
+  } catch (err) {
+    notePhotonMediaError(account.accountId, err);
+    runtime.error?.(`photon: failed to cache local Messages attachment ${JSON.stringify(label)}: ${String(err)}`);
+    return true;
+  }
+}
+
 async function cacheReadableInboundMedia(params: {
   account: ResolvedPhotonAccount;
   content: any;
@@ -289,21 +410,22 @@ async function collectInboundMedia(params: {
   account: ResolvedPhotonAccount;
   content: any;
   messageId: string;
+  timestampMs: number;
   runtime: { log?: (message: string) => void; error?: (message: string) => void };
   out: ChannelInboundMediaInput[];
   fetchAttachment?: (guid: string) => Promise<any>;
 }): Promise<void> {
-  const { account, content, messageId, runtime, out, fetchAttachment } = params;
+  const { account, content, messageId, timestampMs, runtime, out, fetchAttachment } = params;
   if (!content || typeof content !== "object") return;
 
   if (content.type === "reply" || content.type === "edit") {
-    await collectInboundMedia({ account, content: content.content, messageId, runtime, out, fetchAttachment });
+    await collectInboundMedia({ account, content: content.content, messageId, timestampMs, runtime, out, fetchAttachment });
     return;
   }
 
   if (content.type === "group" && Array.isArray(content.items)) {
     for (const item of content.items) {
-      await collectInboundMedia({ account, content: item?.content ?? item, messageId, runtime, out, fetchAttachment });
+      await collectInboundMedia({ account, content: item?.content ?? item, messageId, timestampMs, runtime, out, fetchAttachment });
     }
     return;
   }
@@ -326,6 +448,12 @@ async function collectInboundMedia(params: {
         notePhotonMediaError(account.accountId, err);
         runtime.error?.(`photon: failed to hydrate inbound attachment ${JSON.stringify(attachmentLabel(content))} from GUID ${JSON.stringify(guid)}: ${String(err)}`);
       }
+    }
+  }
+
+  if (account.provider === "imessage") {
+    if (await cacheLocalMessagesAttachment({ account, content, messageId, timestampMs, runtime, out })) {
+      return;
     }
   }
 
@@ -572,6 +700,7 @@ export async function handlePhotonInbound(params: {
     account,
     content: message.content,
     messageId: normalized.messageId,
+    timestampMs: normalized.timestamp,
     runtime,
     out: inboundMedia,
     fetchAttachment,
