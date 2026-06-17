@@ -5,7 +5,7 @@ import { saveMediaBuffer } from "openclaw/plugin-sdk/media-store";
 import { resolveOutboundMediaUrls } from "openclaw/plugin-sdk/reply-payload";
 import { readStoreAllowFromForDmPolicy } from "openclaw/plugin-sdk/security-runtime";
 import { typing, type Message, type Space } from "spectrum-ts";
-import { read as imessageRead } from "spectrum-ts/providers/imessage";
+import { imessage, read as imessageRead } from "spectrum-ts/providers/imessage";
 import { CHANNEL_ID, type PhotonNormalizedInbound, type ResolvedPhotonAccount, type RunningPhotonAccount } from "./types.js";
 import { handlePhotonDirectCommand } from "./directCommands.js";
 import { replyPhotonRich, replyPhotonText } from "./spectrum.js";
@@ -224,30 +224,27 @@ function attachmentLabel(content: any): string {
   return String(content?.name || content?.id || (content?.type === "voice" ? "voice" : "attachment"));
 }
 
-async function collectInboundMedia(params: {
+function attachmentGuidCandidates(content: any): string[] {
+  const candidates = [
+    content?.guid,
+    content?.attachmentGuid,
+    content?.attachment_guid,
+    content?.id,
+    content?.attachment?.guid,
+    content?.attachment?.attachmentGuid,
+  ];
+  return [...new Set(candidates.map((value) => String(value ?? "").trim()).filter(Boolean))];
+}
+
+async function cacheReadableInboundMedia(params: {
   account: ResolvedPhotonAccount;
   content: any;
   messageId: string;
   runtime: { log?: (message: string) => void; error?: (message: string) => void };
   out: ChannelInboundMediaInput[];
-}): Promise<void> {
+}): Promise<boolean> {
   const { account, content, messageId, runtime, out } = params;
-  if (!content || typeof content !== "object") return;
-
-  if (content.type === "reply" || content.type === "edit") {
-    await collectInboundMedia({ account, content: content.content, messageId, runtime, out });
-    return;
-  }
-
-  if (content.type === "group" && Array.isArray(content.items)) {
-    for (const item of content.items) {
-      await collectInboundMedia({ account, content: item?.content ?? item, messageId, runtime, out });
-    }
-    return;
-  }
-
-  if (content.type !== "attachment" && content.type !== "voice") return;
-  if (typeof content.read !== "function") return;
+  if (typeof content?.read !== "function") return false;
 
   const label = attachmentLabel(content);
   const declaredSize = typeof content.size === "number" ? content.size : undefined;
@@ -255,7 +252,7 @@ async function collectInboundMedia(params: {
     runtime.log?.(
       `photon: skipping oversized inbound ${content.type} ${JSON.stringify(label)} (${declaredSize} bytes)`,
     );
-    return;
+    return true;
   }
 
   try {
@@ -264,7 +261,7 @@ async function collectInboundMedia(params: {
       runtime.log?.(
         `photon: skipping oversized inbound ${content.type} ${JSON.stringify(label)} (${buffer.length} bytes)`,
       );
-      return;
+      return true;
     }
     const saved = await saveMediaBuffer(
       buffer,
@@ -280,10 +277,61 @@ async function collectInboundMedia(params: {
       kind: mediaKindFromMime(saved.contentType || content.mimeType, content.type),
       messageId: content.id || messageId,
     });
+    return true;
   } catch (err) {
     notePhotonMediaError(account.accountId, err);
     runtime.error?.(`photon: failed to cache inbound ${content.type} ${JSON.stringify(label)}: ${String(err)}`);
+    return true;
   }
+}
+
+async function collectInboundMedia(params: {
+  account: ResolvedPhotonAccount;
+  content: any;
+  messageId: string;
+  runtime: { log?: (message: string) => void; error?: (message: string) => void };
+  out: ChannelInboundMediaInput[];
+  fetchAttachment?: (guid: string) => Promise<any>;
+}): Promise<void> {
+  const { account, content, messageId, runtime, out, fetchAttachment } = params;
+  if (!content || typeof content !== "object") return;
+
+  if (content.type === "reply" || content.type === "edit") {
+    await collectInboundMedia({ account, content: content.content, messageId, runtime, out, fetchAttachment });
+    return;
+  }
+
+  if (content.type === "group" && Array.isArray(content.items)) {
+    for (const item of content.items) {
+      await collectInboundMedia({ account, content: item?.content ?? item, messageId, runtime, out, fetchAttachment });
+    }
+    return;
+  }
+
+  if (content.type !== "attachment" && content.type !== "voice") return;
+
+  if (await cacheReadableInboundMedia({ account, content, messageId, runtime, out })) {
+    return;
+  }
+
+  if (fetchAttachment) {
+    for (const guid of attachmentGuidCandidates(content)) {
+      try {
+        const fetched = await fetchAttachment(guid);
+        if (fetched && await cacheReadableInboundMedia({ account, content: fetched, messageId, runtime, out })) {
+          runtime.log?.(`photon: hydrated inbound attachment ${JSON.stringify(attachmentLabel(content))} from GUID ${JSON.stringify(guid)}`);
+          return;
+        }
+      } catch (err) {
+        notePhotonMediaError(account.accountId, err);
+        runtime.error?.(`photon: failed to hydrate inbound attachment ${JSON.stringify(attachmentLabel(content))} from GUID ${JSON.stringify(guid)}: ${String(err)}`);
+      }
+    }
+  }
+
+  runtime.log?.(
+    `photon: inbound ${content.type} ${JSON.stringify(attachmentLabel(content))} had no readable bytes; keys=${Object.keys(content).sort().join(",") || "none"}`,
+  );
 }
 
 function spaceType(space: Space): "direct" | "group" {
@@ -513,12 +561,20 @@ export async function handlePhotonInbound(params: {
   const { account, cfg, core, runtime, space, message } = params;
   const normalized = normalizePhotonInbound({ account, space, message });
   const inboundMedia: ChannelInboundMediaInput[] = [];
+  const fetchAttachment =
+    account.provider === "imessage" && !account.local
+      ? async (guid: string) => {
+          const platform = imessage(params.running.app as any) as any;
+          return await platform.getAttachment(guid, (space as any).phone);
+        }
+      : undefined;
   await collectInboundMedia({
     account,
     content: message.content,
     messageId: normalized.messageId,
     runtime,
     out: inboundMedia,
+    fetchAttachment,
   });
   const mediaPayload = buildChannelInboundMediaPayload(
     toInboundMediaFacts(inboundMedia, { messageId: normalized.messageId }),
