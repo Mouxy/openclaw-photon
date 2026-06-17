@@ -267,18 +267,18 @@ type LocalMessagesAttachmentCandidate = {
   totalBytes?: number;
 };
 
-async function findLocalMessagesAttachmentCandidate(params: {
+export function buildLocalMessagesAttachmentCandidateSql(params: {
   label: string;
   timestampMs: number;
-}): Promise<LocalMessagesAttachmentCandidate | undefined> {
+  windowMs?: number;
+}): string | undefined {
   const label = basenameOrSelf(params.label);
   if (!label || label === "attachment" || label === "voice") return undefined;
 
-  const dbPath = path.join(homedir(), "Library/Messages/chat.db");
   const timestampMs = Number.isFinite(params.timestampMs) ? params.timestampMs : Date.now();
-  const windowMs = LOCAL_MESSAGES_ATTACHMENT_WINDOW_MS;
+  const windowMs = params.windowMs ?? LOCAL_MESSAGES_ATTACHMENT_WINDOW_MS;
   const escapedLabel = sqlString(label);
-  const sql = `
+  return `
     select
       a.guid as guid,
       a.transfer_name as transferName,
@@ -289,8 +289,7 @@ async function findLocalMessagesAttachmentCandidate(params: {
       join message_attachment_join maj on maj.attachment_id = a.ROWID
       join message m on m.ROWID = maj.message_id
     where
-      m.is_from_me = 0
-      and abs(((m.date / 1000000) + 978307200000) - ${Math.trunc(timestampMs)}) <= ${windowMs}
+      abs(((m.date / 1000000) + 978307200000) - ${Math.trunc(timestampMs)}) <= ${windowMs}
       and (
         a.transfer_name = ${escapedLabel}
         or a.filename like ${sqlString(`%/${label}`)}
@@ -300,6 +299,15 @@ async function findLocalMessagesAttachmentCandidate(params: {
       m.date desc
     limit 1
   `;
+}
+
+async function findLocalMessagesAttachmentCandidate(params: {
+  label: string;
+  timestampMs: number;
+}): Promise<LocalMessagesAttachmentCandidate | undefined> {
+  const dbPath = path.join(homedir(), "Library/Messages/chat.db");
+  const sql = buildLocalMessagesAttachmentCandidateSql(params);
+  if (!sql) return undefined;
 
   try {
     const { stdout } = await execFileAsync("/usr/bin/sqlite3", ["-json", dbPath, sql], { timeout: 3000, maxBuffer: 1024 * 1024 });
