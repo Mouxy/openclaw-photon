@@ -158,6 +158,10 @@ export interface PhotonRuntimeStatus {
   running: boolean;
   startedAt?: number;
   stoppedAt?: number;
+  lastStartAttemptAt?: number;
+  lastStartError?: string;
+  nextStartRetryAt?: number;
+  startAttemptCount?: number;
   lastInboundAt?: number;
   lastInboundMessageId?: string;
   lastInboundSpaceId?: string;

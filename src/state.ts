@@ -264,9 +264,24 @@ export function notePhotonStarted(accountId: string): PhotonRuntimeStatus {
     running: true,
     startedAt: now,
     stoppedAt: undefined,
+    lastStartAttemptAt: now,
+    lastStartError: undefined,
+    nextStartRetryAt: undefined,
+    startAttemptCount: 0,
     lastStreamReconnectAt: undefined,
     streamReconnectCount: 0,
     lastStreamError: undefined,
+  });
+}
+
+export function notePhotonStartFailed(accountId: string, error: unknown, nextRetryAt?: number): PhotonRuntimeStatus {
+  const previous = getPhotonStatus(accountId);
+  return updatePhotonStatus(accountId, {
+    running: false,
+    lastStartAttemptAt: Date.now(),
+    lastStartError: String(error),
+    nextStartRetryAt: nextRetryAt,
+    startAttemptCount: (previous.startAttemptCount ?? 0) + 1,
   });
 }
 
@@ -274,6 +289,7 @@ export function notePhotonStopped(accountId: string): PhotonRuntimeStatus {
   return updatePhotonStatus(accountId, {
     running: false,
     stoppedAt: Date.now(),
+    nextStartRetryAt: undefined,
   });
 }
 

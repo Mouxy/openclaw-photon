@@ -11,6 +11,7 @@ import {
   hasProcessedPersistedMessage,
   listPersistedSpaces,
   notePhotonInbound,
+  notePhotonStartFailed,
   notePhotonStarted,
   notePhotonStopped,
   notePhotonStreamReconnect,
@@ -69,8 +70,34 @@ function isPhotonTransportError(error: unknown): boolean {
     message.includes("ECONNRESET") ||
     message.includes("UNAVAILABLE") ||
     message.includes("stream interrupted") ||
-    message.includes("ConnectionError")
+    message.includes("ConnectionError") ||
+    message.includes("fetch failed") ||
+    message.includes("temporarily unavailable")
   );
+}
+
+async function startPhotonAppWithRetry(
+  account: any,
+  abortSignal: AbortSignal | undefined,
+  log?: { info?: (message: string) => void; warn?: (message: string) => void; error?: (message: string) => void },
+): Promise<RunningPhotonAccount | undefined> {
+  let backoffMs = 1000;
+  while (!abortSignal?.aborted) {
+    try {
+      const running = await createPhotonApp(account);
+      running.status = notePhotonStarted(account.accountId);
+      runningAccounts.set(account.accountId, running);
+      log?.info?.(`[photon] started provider=${account.provider} local=${account.local}`);
+      return running;
+    } catch (error) {
+      const retryAt = Date.now() + backoffMs;
+      notePhotonStartFailed(account.accountId, error, retryAt);
+      log?.error?.(`[photon] failed to start; retrying in ${backoffMs}ms: ${String(error)}`);
+      await sleepWithAbort(backoffMs + Math.random() * backoffMs * 0.2, abortSignal);
+      backoffMs = Math.min(backoffMs * 2, 30000);
+    }
+  }
+  return undefined;
 }
 
 async function replaceRunningPhotonApp(
@@ -317,14 +344,8 @@ export const photonPlugin = {
         return waitUntilAbort(ctx.abortSignal);
       }
 
-      let running: RunningPhotonAccount | undefined;
-      try {
-        running = await createPhotonApp(account);
-        running.status = notePhotonStarted(account.accountId);
-        runningAccounts.set(account.accountId, running);
-        ctx.log?.info?.(`[photon] started provider=${account.provider} local=${account.local}`);
-      } catch (error) {
-        ctx.log?.error?.(`[photon] failed to start: ${String(error)}`);
+      let running = await startPhotonAppWithRetry(account, ctx.abortSignal, ctx.log);
+      if (!running) {
         return waitUntilAbort(ctx.abortSignal);
       }
 
