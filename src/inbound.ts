@@ -434,6 +434,39 @@ async function runWithTypingIndicator<T>(
   return await run();
 }
 
+async function runWithLongTurnNotice<T>(
+  params: {
+    enabled?: boolean;
+    delayMs?: number;
+    message: Message;
+    runtime: { log?: (message: string) => void; error?: (message: string) => void };
+    running: RunningPhotonAccount;
+    space: Space;
+  },
+  fn: () => Promise<T>,
+): Promise<T> {
+  if (params.enabled === false) return await fn();
+
+  let completed = false;
+  let noticeSent = false;
+  const delayMs = params.delayMs ?? 45_000;
+  const timer = setTimeout(() => {
+    if (completed || noticeSent) return;
+    noticeSent = true;
+    void replyPhotonRich(params.message, params.space, "Still working on this.", [], params.running).catch((err) => {
+      params.runtime.log?.(`photon: long-turn notice failed: ${String(err)}`);
+    });
+  }, delayMs);
+  timer.unref?.();
+
+  try {
+    return await fn();
+  } finally {
+    completed = true;
+    clearTimeout(timer);
+  }
+}
+
 function createPhotonReplyOptions(params: { enabled?: boolean }): Record<string, unknown> {
   if (params.enabled === false) {
     return {
@@ -701,42 +734,54 @@ export async function handlePhotonInbound(params: {
     space,
     runtime,
     async () => {
-      await dispatchInboundReplyWithBase({
-        cfg,
-        channel: CHANNEL_ID,
-        accountId: account.accountId,
-        route,
-        storePath,
-        ctxPayload,
-        core,
-        deliver: async (replyPayload: any) => {
-          const replyText = String(replyPayload?.text ?? "").trim();
-          const mediaUrls = resolveOutboundMediaUrls(replyPayload);
-          if (!replyText && mediaUrls.length === 0) return;
-          const result = await replyPhotonRich(message, space, replyText, mediaUrls, params.running);
-          updatePhotonDelivery(account.accountId, deliveryId, {
-            status: "replied",
-            outboundMessageIds: result?.meta?.messageIds ?? (result?.messageId ? [result.messageId] : undefined),
-            repliedAt: Date.now(),
+      await runWithLongTurnNotice(
+        {
+          enabled: account.longTurnNotice,
+          delayMs: account.longTurnNoticeDelayMs,
+          message,
+          runtime,
+          running: params.running,
+          space,
+        },
+        async () => {
+          await dispatchInboundReplyWithBase({
+            cfg,
+            channel: CHANNEL_ID,
+            accountId: account.accountId,
+            route,
+            storePath,
+            ctxPayload,
+            core,
+            deliver: async (replyPayload: any) => {
+              const replyText = String(replyPayload?.text ?? "").trim();
+              const mediaUrls = resolveOutboundMediaUrls(replyPayload);
+              if (!replyText && mediaUrls.length === 0) return;
+              const result = await replyPhotonRich(message, space, replyText, mediaUrls, params.running);
+              updatePhotonDelivery(account.accountId, deliveryId, {
+                status: "replied",
+                outboundMessageIds: result?.meta?.messageIds ?? (result?.messageId ? [result.messageId] : undefined),
+                repliedAt: Date.now(),
+              });
+            },
+            onRecordError: (err: unknown) => {
+              runtime.error?.(`photon: failed updating session meta: ${String(err)}`);
+            },
+            onDispatchError: (err: unknown, info: { kind: string }) => {
+              runtime.error?.(`photon ${info.kind} reply failed: ${String(err)}`);
+              updatePhotonDelivery(account.accountId, deliveryId, {
+                status: "failed",
+                reason: info.kind,
+                error: String(err),
+                failedAt: Date.now(),
+              });
+            },
+            replyOptions: {
+              disableBlockStreaming: true,
+              ...createPhotonReplyOptions({ enabled: account.typingIndicators }),
+            },
           });
         },
-        onRecordError: (err: unknown) => {
-          runtime.error?.(`photon: failed updating session meta: ${String(err)}`);
-        },
-        onDispatchError: (err: unknown, info: { kind: string }) => {
-          runtime.error?.(`photon ${info.kind} reply failed: ${String(err)}`);
-          updatePhotonDelivery(account.accountId, deliveryId, {
-            status: "failed",
-            reason: info.kind,
-            error: String(err),
-            failedAt: Date.now(),
-          });
-        },
-        replyOptions: {
-          disableBlockStreaming: true,
-          ...createPhotonReplyOptions({ enabled: account.typingIndicators }),
-        },
-      });
+      );
     },
     { enabled: account.typingIndicators, refreshIntervalMs: 10_000 },
   );

@@ -43,6 +43,8 @@ export interface PhotonAccountConfig {
   sendReadReceipts?: boolean;
   typingIndicators?: boolean;
   progressUpdates?: boolean;
+  longTurnNotice?: boolean;
+  longTurnNoticeDelayMs?: number;
   dispatchControlEvents?: boolean;
   dispatchPollVotes?: boolean;
   nativeActions?: boolean;
@@ -71,6 +73,8 @@ export interface ResolvedPhotonAccount {
   sendReadReceipts: boolean;
   typingIndicators: boolean;
   progressUpdates: boolean;
+  longTurnNotice: boolean;
+  longTurnNoticeDelayMs: number;
   dispatchControlEvents: boolean;
   dispatchPollVotes: boolean;
   nativeActions: boolean;
