@@ -402,7 +402,7 @@ async function cacheReadableInboundMedia(params: {
   } catch (err) {
     notePhotonMediaError(account.accountId, err);
     runtime.error?.(`photon: failed to cache inbound ${content.type} ${JSON.stringify(label)}: ${String(err)}`);
-    return true;
+    return false;
   }
 }
 
