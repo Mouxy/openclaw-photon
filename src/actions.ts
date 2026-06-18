@@ -173,7 +173,8 @@ async function recreateRunningPhotonApp(
   current: RunningPhotonAccount,
 ): Promise<RunningPhotonAccount> {
   const next = await createPhotonApp(account);
-  next.spaces = current.spaces;
+  // Space objects belong to the old Spectrum client. Keep durable message
+  // knowledge, but resolve spaces again through the fresh app after reconnect.
   next.messages = current.messages;
   next.reactionMessages = current.reactionMessages;
   next.seenMessages = current.seenMessages;

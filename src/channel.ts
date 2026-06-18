@@ -3,7 +3,7 @@ import { waitUntilAbort } from "openclaw/plugin-sdk/channel-lifecycle";
 import { CHANNEL_ID, type RunningPhotonAccount } from "./types.js";
 import { PhotonConfigSchema, listAccountIds, resolveAccount } from "./config.js";
 import { getPhotonRuntime } from "./runtime.js";
-import { createPhotonApp, rememberPhotonMessage, sendPhotonRich, sendPhotonTyping, stopPhotonApp } from "./spectrum.js";
+import { createPhotonApp, rememberPhotonMessage, replyPhotonRich, sendPhotonRich, sendPhotonTyping, stopPhotonApp } from "./spectrum.js";
 import { handlePhotonInbound } from "./inbound.js";
 import { createPhotonMessageActions } from "./actions.js";
 import {
@@ -107,7 +107,8 @@ async function replaceRunningPhotonApp(
 ): Promise<RunningPhotonAccount> {
   log?.warn?.("[photon] recreating Spectrum app after transport interruption");
   const next = await createPhotonApp(account);
-  next.spaces = current.spaces;
+  // Space objects are tied to the old Spectrum client. Keep durable message
+  // knowledge, but force fresh space resolution after reconnect.
   next.messages = current.messages;
   next.reactionMessages = current.reactionMessages;
   next.seenMessages = current.seenMessages;
@@ -128,6 +129,15 @@ function accountStatus(accountId: string) {
     cachedMessages: running?.messages.size ?? undefined,
     cachedReactionHandles: running?.reactionMessages.size ?? undefined,
   };
+}
+
+function noteOutboundSuccess(accountId: string, result: { messageId: string; channelId: string }) {
+  return updatePhotonStatus(accountId, {
+    lastOutboundAt: Date.now(),
+    lastOutboundMessageId: result.messageId,
+    lastOutboundSpaceId: result.channelId,
+    lastActionError: undefined,
+  });
 }
 
 export const photonPlugin = {
@@ -256,11 +266,7 @@ export const photonPlugin = {
         const result = await sendPhotonRich(running, to, text.slice(0, account.textChunkLimit), [], {
           maxOutboundAttachmentBytes: account.maxOutboundAttachmentBytes,
         });
-        running.status = updatePhotonStatus(account.accountId, {
-          lastOutboundAt: Date.now(),
-          lastOutboundMessageId: result.messageId,
-          lastOutboundSpaceId: result.channelId,
-        });
+        running.status = noteOutboundSuccess(account.accountId, result);
         return result;
       } catch (error) {
         running.status = updatePhotonStatus(account.accountId, { lastActionError: String(error) });
@@ -269,11 +275,7 @@ export const photonPlugin = {
         const result = await sendPhotonRich(running, to, text.slice(0, account.textChunkLimit), [], {
           maxOutboundAttachmentBytes: account.maxOutboundAttachmentBytes,
         });
-        running.status = updatePhotonStatus(account.accountId, {
-          lastOutboundAt: Date.now(),
-          lastOutboundMessageId: result.messageId,
-          lastOutboundSpaceId: result.channelId,
-        });
+        running.status = noteOutboundSuccess(account.accountId, result);
         return result;
       }
     },
@@ -292,11 +294,7 @@ export const photonPlugin = {
           mediaUrl ? [String(mediaUrl)] : [],
           { maxOutboundAttachmentBytes: account.maxOutboundAttachmentBytes },
         );
-        running.status = updatePhotonStatus(account.accountId, {
-          lastOutboundAt: Date.now(),
-          lastOutboundMessageId: result.messageId,
-          lastOutboundSpaceId: result.channelId,
-        });
+        running.status = noteOutboundSuccess(account.accountId, result);
         return result;
       } catch (error) {
         running.status = updatePhotonStatus(account.accountId, { lastActionError: String(error) });
@@ -309,11 +307,7 @@ export const photonPlugin = {
           mediaUrl ? [String(mediaUrl)] : [],
           { maxOutboundAttachmentBytes: account.maxOutboundAttachmentBytes },
         );
-        running.status = updatePhotonStatus(account.accountId, {
-          lastOutboundAt: Date.now(),
-          lastOutboundMessageId: result.messageId,
-          lastOutboundSpaceId: result.channelId,
-        });
+        running.status = noteOutboundSuccess(account.accountId, result);
         return result;
       }
     },
@@ -374,6 +368,25 @@ export const photonPlugin = {
                   running: running!,
                   space,
                   message,
+                  sendReply: async ({ message: replyTo, space: replySpace, text, mediaUrls }) => {
+                    try {
+                      const result = await replyPhotonRich(replyTo, replySpace, text, mediaUrls, running!, {
+                        maxOutboundAttachmentBytes: account.maxOutboundAttachmentBytes,
+                      });
+                      if (result) running!.status = noteOutboundSuccess(account.accountId, result);
+                      return result;
+                    } catch (error) {
+                      running!.status = updatePhotonStatus(account.accountId, { lastActionError: String(error) });
+                      if (account.provider !== "imessage" || account.local || !isPhotonTransportError(error)) throw error;
+                      ctx.log?.warn?.(`[photon] reply failed after transport drop; reconnecting and sending unthreaded fallback: ${String(error)}`);
+                      running = await replaceRunningPhotonApp(account, running!, ctx.log);
+                      const result = await sendPhotonRich(running!, replySpace.id, text, mediaUrls, {
+                        maxOutboundAttachmentBytes: account.maxOutboundAttachmentBytes,
+                      });
+                      running!.status = noteOutboundSuccess(account.accountId, result);
+                      return result;
+                    }
+                  },
                   runtime: {
                     log: (msg: string) => ctx.log?.info?.(msg),
                     error: (msg: string) => ctx.log?.error?.(msg),

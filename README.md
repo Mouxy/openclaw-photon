@@ -192,9 +192,11 @@ Use the terminal provider to prove OpenClaw routing before iMessage auth:
   degraded, not fatal. Treat repeated lines in a short window, persistent
   failure logs, fresh `PERMISSION_DENIED`, or fresh `Target not allowed` as
   actionable.
-- Do not blindly retry outbound remote iMessage sends after ambiguous transport
-  failures; Spectrum/iMessage does not expose a clear outbound idempotency key,
-  so retries can duplicate visible messages.
+- Remote iMessage sends retry once after a transport drop by recreating the
+  Spectrum app and resolving a fresh space. Inbound reply recovery falls back to
+  an unthreaded send if the original threaded reply object came from the stale
+  client. Keep this capped: Spectrum/iMessage does not expose a clear outbound
+  idempotency key, so repeated retries can duplicate visible messages.
 - `openclaw channels status --probe` includes Photon runtime status when the
   gateway asks the plugin to probe the account.
 - `message(action=photonDoctor, channel=photon)` returns a JSON diagnostic with

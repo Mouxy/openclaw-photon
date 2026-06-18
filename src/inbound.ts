@@ -13,7 +13,7 @@ import { typing, type Message, type Space } from "spectrum-ts";
 import { imessage, read as imessageRead } from "spectrum-ts/providers/imessage";
 import { CHANNEL_ID, type PhotonNormalizedInbound, type ResolvedPhotonAccount, type RunningPhotonAccount } from "./types.js";
 import { handlePhotonDirectCommand } from "./directCommands.js";
-import { replyPhotonRich, replyPhotonText } from "./spectrum.js";
+import { replyPhotonRich, replyPhotonText, type PhotonOutboundResult } from "./spectrum.js";
 import { notePhotonMediaError, notePhotonUnsupportedContent, rememberPhotonDelivery, updatePhotonDelivery } from "./state.js";
 
 const execFileAsync = promisify(execFile);
@@ -693,6 +693,12 @@ export async function handlePhotonInbound(params: {
   running: RunningPhotonAccount;
   space: Space;
   message: Message;
+  sendReply?: (input: {
+    message: Message;
+    space: Space;
+    text: string;
+    mediaUrls: string[];
+  }) => Promise<PhotonOutboundResult | undefined>;
 }): Promise<{ accepted: boolean; reason?: string; normalized: PhotonNormalizedInbound }> {
   const { account, cfg, core, runtime, space, message } = params;
   const normalized = normalizePhotonInbound({ account, space, message });
@@ -949,7 +955,9 @@ export async function handlePhotonInbound(params: {
               const replyText = String(replyPayload?.text ?? "").trim();
               const mediaUrls = resolveOutboundMediaUrls(replyPayload);
               if (!replyText && mediaUrls.length === 0) return;
-              const result = await replyPhotonRich(message, space, replyText, mediaUrls, params.running);
+              const result = params.sendReply
+                ? await params.sendReply({ message, space, text: replyText, mediaUrls })
+                : await replyPhotonRich(message, space, replyText, mediaUrls, params.running);
               updatePhotonDelivery(account.accountId, deliveryId, {
                 status: "replied",
                 outboundMessageIds: result?.meta?.messageIds ?? (result?.messageId ? [result.messageId] : undefined),
