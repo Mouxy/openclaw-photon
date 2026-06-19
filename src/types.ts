@@ -43,6 +43,9 @@ export interface PhotonAccountConfig {
   sendReadReceipts?: boolean;
   typingIndicators?: boolean;
   progressUpdates?: boolean;
+  inboundBatching?: boolean;
+  inboundBatchDelayMs?: number;
+  inboundBatchMaxDelayMs?: number;
   longTurnNotice?: boolean;
   longTurnNoticeDelayMs?: number;
   dispatchControlEvents?: boolean;
@@ -73,6 +76,9 @@ export interface ResolvedPhotonAccount {
   sendReadReceipts: boolean;
   typingIndicators: boolean;
   progressUpdates: boolean;
+  inboundBatching: boolean;
+  inboundBatchDelayMs: number;
+  inboundBatchMaxDelayMs: number;
   longTurnNotice: boolean;
   longTurnNoticeDelayMs: number;
   dispatchControlEvents: boolean;
@@ -104,6 +110,7 @@ export interface RunningPhotonAccount {
   messages: Map<string, Message>;
   reactionMessages: Map<string, string>;
   seenMessages: Map<string, number>;
+  inflightMessages?: Map<string, number>;
   status: PhotonRuntimeStatus;
 }
 
@@ -136,7 +143,7 @@ export interface PhotonPersistedReaction {
   updatedAt: number;
 }
 
-export type PhotonDeliveryStatus = "received" | "accepted" | "ignored" | "replied" | "failed";
+export type PhotonDeliveryStatus = "received" | "accepted" | "handled" | "ignored" | "replied" | "failed";
 
 export interface PhotonDeliveryRecord {
   id: string;
@@ -152,6 +159,7 @@ export interface PhotonDeliveryRecord {
   outboundMessageIds?: string[];
   receivedAt: number;
   acceptedAt?: number;
+  handledAt?: number;
   ignoredAt?: number;
   repliedAt?: number;
   failedAt?: number;
@@ -177,6 +185,10 @@ export interface PhotonRuntimeStatus {
   lastStreamError?: string;
   lastMediaError?: string;
   lastActionError?: string;
+  lastTransportErrorAt?: number;
+  lastTransportError?: string;
+  transportErrorCount?: number;
+  lastTransportRecoveryAt?: number;
   lastUnsupportedContent?: string;
   updatedAt: number;
 }

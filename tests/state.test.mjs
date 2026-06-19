@@ -53,7 +53,23 @@ test("persists spaces, latest messages, and reactions", async () => {
   state.notePhotonStarted("default");
   state.notePhotonInbound("default", { id: "msg-1", spaceId: "space-1" });
   state.notePhotonOutbound("default", { id: "msg-2", spaceId: "space-1" });
+  state.notePhotonTransportError("default", new Error("[upstream] Connection dropped"));
+  assert.equal(state.getPhotonStatus("default").lastTransportError, "Error: [upstream] Connection dropped");
+  assert.equal(state.getPhotonStatus("default").transportErrorCount, 1);
+  assert.ok(state.getPhotonStatus("default").lastTransportErrorAt >= state.getPhotonStatus("default").lastTransportRecoveryAt);
+  state.notePhotonOutbound("default", { id: "msg-3", spaceId: "space-1" });
+  assert.equal(state.getPhotonStatus("default").lastTransportError, undefined);
+  assert.equal(state.getPhotonStatus("default").lastTransportErrorAt, undefined);
+  assert.ok(state.getPhotonStatus("default").lastTransportRecoveryAt >= state.getPhotonStatus("default").lastOutboundAt);
   state.notePhotonStreamReconnect("default", new Error("ECONNRESET"));
+  assert.equal(state.getPhotonStatus("default").lastStreamError, "Error: ECONNRESET");
+  assert.equal(state.getPhotonStatus("default").streamReconnectCount, 1);
+  assert.equal(state.getPhotonStatus("default").lastTransportError, "Error: ECONNRESET");
+  state.notePhotonInbound("default", { id: "msg-recovered", spaceId: "space-1" });
+  assert.equal(state.getPhotonStatus("default").lastStreamError, undefined);
+  assert.equal(state.getPhotonStatus("default").lastTransportError, undefined);
+  assert.equal(state.getPhotonStatus("default").lastTransportErrorAt, undefined);
+  assert.equal(state.getPhotonStatus("default").streamReconnectCount, 1);
   state.notePhotonStartFailed("default", new Error("fetch failed"), 12345);
   assert.equal(state.getPhotonStatus("default").running, false);
   assert.equal(state.getPhotonStatus("default").lastStartError, "Error: fetch failed");
@@ -73,12 +89,44 @@ test("persists spaces, latest messages, and reactions", async () => {
   assert.equal(state.getPhotonStatus("default").lastStartError, undefined);
   assert.equal(state.getPhotonStatus("default").nextStartRetryAt, undefined);
   assert.equal(state.getPhotonStatus("default").startAttemptCount, 0);
-  assert.equal(state.getPhotonStatus("default").lastInboundMessageId, "msg-1");
-  assert.equal(state.getPhotonStatus("default").lastOutboundMessageId, "msg-2");
+  assert.equal(state.getPhotonStatus("default").lastInboundMessageId, "msg-recovered");
+  assert.equal(state.getPhotonStatus("default").lastOutboundMessageId, "msg-3");
   assert.equal(state.getPhotonStatus("default").streamReconnectCount, 0);
   assert.equal(state.getPhotonDelivery("default", "msg-1").status, "replied");
   assert.deepEqual(state.getPhotonDelivery("default", "msg-1").outboundMessageIds, ["msg-2"]);
   assert.equal(state.listPhotonDeliveries("default")[0].id, "msg-1");
+  state.rememberPhotonDelivery("default", {
+    id: "msg-stalled",
+    inboundMessageId: "msg-stalled",
+    spaceId: "space-1",
+    status: "accepted",
+    receivedAt: 10,
+    acceptedAt: 10,
+    updatedAt: Date.now() - 60_000,
+  });
+  assert.equal(state.listUnresolvedPhotonDeliveries("default", 30_000)[0].id, "msg-stalled");
+  assert.equal(state.failPendingPhotonDeliveries("default", "test restart", 123456), 1);
+  assert.equal(state.listUnresolvedPhotonDeliveries("default", 30_000).length, 0);
+  assert.equal(state.getPhotonDelivery("default", "msg-stalled").status, "failed");
+  assert.equal(state.getPhotonDelivery("default", "msg-stalled").reason, "test restart");
+  assert.equal(state.getPhotonDelivery("default", "msg-stalled").failedAt, 123456);
+  state.rememberPhotonDelivery("default", {
+    id: "msg-handled",
+    inboundMessageId: "msg-handled",
+    spaceId: "space-1",
+    status: "accepted",
+    receivedAt: 10,
+    acceptedAt: 10,
+    updatedAt: Date.now() - 60_000,
+  });
+  state.updatePhotonDelivery("default", "msg-handled", {
+    status: "handled",
+    reason: "no channel reply recorded",
+    handledAt: 20,
+  });
+  assert.equal(state.listUnresolvedPhotonDeliveries("default", 30_000).length, 0);
+  assert.equal(state.getPhotonDelivery("default", "msg-handled").status, "handled");
+  assert.equal(state.getPhotonDelivery("default", "msg-handled").handledAt, 20);
 
   state.forgetPersistedReaction("default", "reaction-key");
   assert.equal(state.getPersistedReaction("default", "reaction-key"), undefined);

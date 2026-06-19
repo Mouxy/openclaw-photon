@@ -200,6 +200,30 @@ export function listPhotonDeliveries(accountId: string, limit = 20): PhotonDeliv
     .slice(0, Math.max(0, limit));
 }
 
+export function listUnresolvedPhotonDeliveries(accountId: string, olderThanMs = 30_000, limit = 20): PhotonDeliveryRecord[] {
+  const cutoff = Date.now() - Math.max(0, olderThanMs);
+  return Object.values(accountState(accountId).deliveries)
+    .filter((record) => ["received", "accepted"].includes(record.status) && record.updatedAt <= cutoff)
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .slice(0, Math.max(0, limit));
+}
+
+export function failPendingPhotonDeliveries(accountId: string, reason: string, now = Date.now()): number {
+  const account = accountState(accountId);
+  let failed = 0;
+  for (const record of Object.values(account.deliveries)) {
+    if (!["received", "accepted"].includes(record.status)) continue;
+    record.status = "failed";
+    record.reason = reason;
+    record.error = reason;
+    record.failedAt = now;
+    record.updatedAt = now;
+    failed += 1;
+  }
+  if (failed > 0) writeState();
+  return failed;
+}
+
 export function getPersistedMessage(accountId: string, messageId: string): PhotonPersistedMessage | undefined {
   return accountState(accountId).messages[messageId];
 }
@@ -260,6 +284,7 @@ export function updatePhotonStatus(accountId: string, patch: Partial<PhotonRunti
 
 export function notePhotonStarted(accountId: string): PhotonRuntimeStatus {
   const now = Date.now();
+  failPendingPhotonDeliveries(accountId, "interrupted by Photon restart", now);
   return updatePhotonStatus(accountId, {
     running: true,
     startedAt: now,
@@ -271,6 +296,10 @@ export function notePhotonStarted(accountId: string): PhotonRuntimeStatus {
     lastStreamReconnectAt: undefined,
     streamReconnectCount: 0,
     lastStreamError: undefined,
+    lastTransportErrorAt: undefined,
+    lastTransportError: undefined,
+    transportErrorCount: 0,
+    lastTransportRecoveryAt: now,
   });
 }
 
@@ -294,27 +323,41 @@ export function notePhotonStopped(accountId: string): PhotonRuntimeStatus {
 }
 
 export function notePhotonInbound(accountId: string, message: { id: string; spaceId: string }): PhotonRuntimeStatus {
+  const now = Date.now();
   return updatePhotonStatus(accountId, {
-    lastInboundAt: Date.now(),
+    lastInboundAt: now,
     lastInboundMessageId: message.id,
     lastInboundSpaceId: message.spaceId,
+    lastStreamError: undefined,
+    lastTransportErrorAt: undefined,
+    lastTransportError: undefined,
+    lastTransportRecoveryAt: now,
   });
 }
 
 export function notePhotonOutbound(accountId: string, message: { id?: string; spaceId?: string }): PhotonRuntimeStatus {
+  const now = Date.now();
   return updatePhotonStatus(accountId, {
-    lastOutboundAt: Date.now(),
+    lastOutboundAt: now,
     lastOutboundMessageId: message.id,
     lastOutboundSpaceId: message.spaceId,
+    lastStreamError: undefined,
+    lastTransportErrorAt: undefined,
+    lastTransportError: undefined,
+    lastTransportRecoveryAt: now,
   });
 }
 
 export function notePhotonStreamReconnect(accountId: string, error?: unknown): PhotonRuntimeStatus {
   const previous = getPhotonStatus(accountId);
+  const now = Date.now();
   return updatePhotonStatus(accountId, {
-    lastStreamReconnectAt: Date.now(),
+    lastStreamReconnectAt: now,
     streamReconnectCount: (previous.streamReconnectCount ?? 0) + 1,
     lastStreamError: error == null ? previous.lastStreamError : String(error),
+    lastTransportErrorAt: error == null ? previous.lastTransportErrorAt : now,
+    lastTransportError: error == null ? previous.lastTransportError : String(error),
+    transportErrorCount: error == null ? previous.transportErrorCount : (previous.transportErrorCount ?? 0) + 1,
   });
 }
 
@@ -324,6 +367,15 @@ export function notePhotonMediaError(accountId: string, error: unknown): PhotonR
 
 export function notePhotonActionError(accountId: string, error: unknown): PhotonRuntimeStatus {
   return updatePhotonStatus(accountId, { lastActionError: String(error) });
+}
+
+export function notePhotonTransportError(accountId: string, error: unknown): PhotonRuntimeStatus {
+  const previous = getPhotonStatus(accountId);
+  return updatePhotonStatus(accountId, {
+    lastTransportErrorAt: Date.now(),
+    lastTransportError: String(error),
+    transportErrorCount: (previous.transportErrorCount ?? 0) + 1,
+  });
 }
 
 export function notePhotonUnsupportedContent(accountId: string, contentType: string): PhotonRuntimeStatus {

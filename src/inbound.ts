@@ -510,6 +510,24 @@ export function normalizePhotonInbound(params: {
   };
 }
 
+export function createBatchedPhotonMessage(messages: Message[]): Message {
+  const nonEmpty = messages.filter(Boolean);
+  if (nonEmpty.length <= 1) return nonEmpty[0]!;
+
+  const latest = nonEmpty[nonEmpty.length - 1]!;
+  const first = nonEmpty[0]!;
+  return {
+    ...latest,
+    id: latest.id,
+    content: { type: "group", items: nonEmpty },
+    sender: latest.sender ?? first.sender,
+    timestamp: latest.timestamp ?? first.timestamp,
+    direction: latest.direction ?? first.direction,
+    platform: latest.platform ?? first.platform,
+    photonBatchMessageIds: nonEmpty.map((message) => normalizeId(message.id)).filter(Boolean),
+  } as Message;
+}
+
 function summarizeBody(text: string, maxLength = 120): string {
   const singleLine = text.replace(/\s+/g, " ").trim();
   if (!singleLine) return "";
@@ -557,7 +575,7 @@ export function createPhotonTypingRefresher(params: {
     return { stop: async () => {} };
   }
 
-  const intervalMs = params.intervalMs ?? 10_000;
+  const intervalMs = params.intervalMs ?? 4_000;
   let stopped = false;
   let refreshing = false;
   let timer: ReturnType<typeof setInterval> | undefined;
@@ -689,6 +707,9 @@ export async function handlePhotonInbound(params: {
   account: ResolvedPhotonAccount;
   cfg: any;
   core: any;
+  createActions?: () => {
+    handleAction: (ctx: any) => Promise<any>;
+  };
   runtime: { log?: (message: string) => void; error?: (message: string) => void };
   running: RunningPhotonAccount;
   space: Space;
@@ -699,7 +720,7 @@ export async function handlePhotonInbound(params: {
     text: string;
     mediaUrls: string[];
   }) => Promise<PhotonOutboundResult | undefined>;
-}): Promise<{ accepted: boolean; reason?: string; normalized: PhotonNormalizedInbound }> {
+}): Promise<{ accepted: boolean; reason?: string; normalized: PhotonNormalizedInbound; shouldAcknowledge: boolean }> {
   const { account, cfg, core, runtime, space, message } = params;
   const normalized = normalizePhotonInbound({ account, space, message });
   const inboundMedia: ChannelInboundMediaInput[] = [];
@@ -750,7 +771,7 @@ export async function handlePhotonInbound(params: {
         ignoredAt: Date.now(),
       });
     }
-    return { accepted: false, reason: "missing identifiers", normalized };
+    return { accepted: false, reason: "missing identifiers", normalized, shouldAcknowledge: true };
   }
   if (message.direction === "outbound") {
     updatePhotonDelivery(account.accountId, deliveryId, {
@@ -758,7 +779,7 @@ export async function handlePhotonInbound(params: {
       reason: "outbound echo",
       ignoredAt: Date.now(),
     });
-    return { accepted: false, reason: "outbound echo", normalized };
+    return { accepted: false, reason: "outbound echo", normalized, shouldAcknowledge: true };
   }
   if (isPhotonControlEventContent(message.content) && shouldIgnorePhotonControlEvent(account, message.content)) {
     const reason = `control event ${contentType(message.content) ?? "unknown"}`;
@@ -767,7 +788,7 @@ export async function handlePhotonInbound(params: {
       reason,
       ignoredAt: Date.now(),
     });
-    return { accepted: false, reason, normalized };
+    return { accepted: false, reason, normalized, shouldAcknowledge: true };
   }
   if (!normalized.rawBody) {
     updatePhotonDelivery(account.accountId, deliveryId, {
@@ -775,7 +796,7 @@ export async function handlePhotonInbound(params: {
       reason: "empty body",
       ignoredAt: Date.now(),
     });
-    return { accepted: false, reason: "empty body", normalized };
+    return { accepted: false, reason: "empty body", normalized, shouldAcknowledge: true };
   }
 
   const isGroup = normalized.chatType === "group";
@@ -787,7 +808,7 @@ export async function handlePhotonInbound(params: {
         reason: "group policy disabled",
         ignoredAt: Date.now(),
       });
-      return { accepted: false, reason: "group policy disabled", normalized };
+      return { accepted: false, reason: "group policy disabled", normalized, shouldAcknowledge: true };
     }
     if (account.groupPolicy === "allowlist" && !isAllowed(account.groupAllowFrom, normalized.spaceId)) {
       updatePhotonDelivery(account.accountId, deliveryId, {
@@ -795,7 +816,7 @@ export async function handlePhotonInbound(params: {
         reason: "group not allowlisted",
         ignoredAt: Date.now(),
       });
-      return { accepted: false, reason: "group not allowlisted", normalized };
+      return { accepted: false, reason: "group not allowlisted", normalized, shouldAcknowledge: true };
     }
     if (account.requireMention && !normalized.wasMentioned) {
       updatePhotonDelivery(account.accountId, deliveryId, {
@@ -803,7 +824,7 @@ export async function handlePhotonInbound(params: {
         reason: "mention required",
         ignoredAt: Date.now(),
       });
-      return { accepted: false, reason: "mention required", normalized };
+      return { accepted: false, reason: "mention required", normalized, shouldAcknowledge: true };
     }
     if (account.requireMention) {
       bodyForAgent = cleanLeadingMention(bodyForAgent, account.mentionNames);
@@ -815,7 +836,7 @@ export async function handlePhotonInbound(params: {
         reason: "dm policy disabled",
         ignoredAt: Date.now(),
       });
-      return { accepted: false, reason: "dm policy disabled", normalized };
+      return { accepted: false, reason: "dm policy disabled", normalized, shouldAcknowledge: true };
     }
     if (account.dmPolicy !== "open") {
       const pairing = createScopedPairingAccess({
@@ -853,7 +874,7 @@ export async function handlePhotonInbound(params: {
           reason,
           ignoredAt: Date.now(),
         });
-        return { accepted: false, reason, normalized };
+        return { accepted: false, reason, normalized, shouldAcknowledge: true };
       }
     }
   }
@@ -864,13 +885,13 @@ export async function handlePhotonInbound(params: {
   });
   await markReadBestEffort({ account, message, space, runtime });
 
-  if (await handlePhotonDirectCommand({ account, cfg, message, normalized, running: params.running, space })) {
+  if (await handlePhotonDirectCommand({ account, cfg, createActions: params.createActions, message, normalized, running: params.running, space })) {
     updatePhotonDelivery(account.accountId, deliveryId, {
       status: "replied",
       reason: "direct command",
       repliedAt: Date.now(),
     });
-    return { accepted: true, normalized };
+    return { accepted: true, normalized, shouldAcknowledge: true };
   }
 
   const route = core.channel.routing.resolveAgentRoute({
@@ -929,6 +950,10 @@ export async function handlePhotonInbound(params: {
     ...mediaPayload,
   });
 
+  let dispatchFailed = false;
+  let dispatchFailureReason: string | undefined;
+  let replyDelivered = false;
+
   await runWithTypingIndicator(
     space,
     runtime,
@@ -958,6 +983,7 @@ export async function handlePhotonInbound(params: {
               const result = params.sendReply
                 ? await params.sendReply({ message, space, text: replyText, mediaUrls })
                 : await replyPhotonRich(message, space, replyText, mediaUrls, params.running);
+              replyDelivered = true;
               updatePhotonDelivery(account.accountId, deliveryId, {
                 status: "replied",
                 outboundMessageIds: result?.meta?.messageIds ?? (result?.messageId ? [result.messageId] : undefined),
@@ -968,6 +994,8 @@ export async function handlePhotonInbound(params: {
               runtime.error?.(`photon: failed updating session meta: ${String(err)}`);
             },
             onDispatchError: (err: unknown, info: { kind: string }) => {
+              dispatchFailed = true;
+              dispatchFailureReason = info.kind;
               runtime.error?.(`photon ${info.kind} reply failed: ${String(err)}`);
               updatePhotonDelivery(account.accountId, deliveryId, {
                 status: "failed",
@@ -984,8 +1012,25 @@ export async function handlePhotonInbound(params: {
         },
       );
     },
-    { enabled: account.typingIndicators, refreshIntervalMs: 10_000 },
+    { enabled: account.typingIndicators, refreshIntervalMs: 4_000 },
   );
 
-  return { accepted: true, normalized };
+  if (dispatchFailed) {
+    return {
+      accepted: false,
+      reason: dispatchFailureReason ? `dispatch ${dispatchFailureReason} failed` : "dispatch failed",
+      normalized,
+      shouldAcknowledge: false,
+    };
+  }
+
+  if (!replyDelivered) {
+    updatePhotonDelivery(account.accountId, deliveryId, {
+      status: "handled",
+      reason: "no channel reply recorded",
+      handledAt: Date.now(),
+    });
+  }
+
+  return { accepted: true, normalized, shouldAcknowledge: true };
 }

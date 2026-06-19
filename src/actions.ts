@@ -27,18 +27,18 @@ import {
   getPersistedMessage,
   getPersistedReaction,
   listPhotonDeliveries,
+  listUnresolvedPhotonDeliveries,
   listPersistedSpaces,
   notePhotonActionError,
+  notePhotonTransportError,
   rememberPersistedReaction,
 } from "./state.js";
 import {
   assertOutboundMediaWithinLimits,
   buildPhotonContents,
-  createPhotonApp,
   normalizeOutboundTarget,
   rememberPhotonMessage,
   resolvePhotonSpace,
-  stopPhotonApp,
 } from "./spectrum.js";
 
 type ActionContext = {
@@ -58,6 +58,10 @@ type AgentToolResult = {
   content: Array<{ type: "text"; text: string }>;
   details?: unknown;
   isError?: boolean;
+};
+
+type PhotonActionsOptions = {
+  recreateRunning?: (account: ResolvedPhotonAccount, current: RunningPhotonAccount) => Promise<RunningPhotonAccount>;
 };
 
 const SAFE_ACTIONS = [
@@ -163,25 +167,11 @@ function isPhotonTransportError(error: unknown): boolean {
     message.includes("ECONNRESET") ||
     message.includes("UNAVAILABLE") ||
     message.includes("stream interrupted") ||
-    message.includes("ConnectionError")
+    message.includes("ConnectionError") ||
+    message.includes("DEADLINE_EXCEEDED") ||
+    message.includes("temporarily unavailable") ||
+    message.includes("Connection dropped")
   );
-}
-
-async function recreateRunningPhotonApp(
-  runningAccounts: Map<string, RunningPhotonAccount>,
-  account: ResolvedPhotonAccount,
-  current: RunningPhotonAccount,
-): Promise<RunningPhotonAccount> {
-  const next = await createPhotonApp(account);
-  // Space objects belong to the old Spectrum client. Keep durable message
-  // knowledge, but resolve spaces again through the fresh app after reconnect.
-  next.messages = current.messages;
-  next.reactionMessages = current.reactionMessages;
-  next.seenMessages = current.seenMessages;
-  next.status = current.status;
-  runningAccounts.set(account.accountId, next);
-  await stopPhotonApp(current).catch(() => undefined);
-  return next;
 }
 
 function readString(params: Record<string, unknown>, ...keys: string[]): string | undefined {
@@ -738,12 +728,32 @@ function buildAccountContents(
   });
 }
 
+function hasUnresolvedDoctorTransportError(status: ReturnType<typeof getPhotonStatus>): boolean {
+  const errorAt = status.lastTransportErrorAt ?? 0;
+  if (!errorAt || !status.lastTransportError) return false;
+  const recoveredAt = Math.max(status.lastTransportRecoveryAt ?? 0, status.lastOutboundAt ?? 0);
+  return errorAt > recoveredAt;
+}
+
+function hasUnresolvedDoctorStreamReconnect(status: ReturnType<typeof getPhotonStatus>): boolean {
+  const reconnectAt = status.lastStreamReconnectAt ?? 0;
+  if (!reconnectAt) return false;
+  const recoveredAt = Math.max(status.lastTransportRecoveryAt ?? 0, status.lastInboundAt ?? 0, status.lastOutboundAt ?? 0);
+  return reconnectAt > recoveredAt;
+}
+
 function doctorResult(account: ResolvedPhotonAccount, running: RunningPhotonAccount | undefined): AgentToolResult {
   const persisted = getPhotonStatus(account.accountId);
+  const runtimeStatus = running?.status ?? {};
+  const status = { ...runtimeStatus, ...persisted };
   const spaces = listPersistedSpaces(account.accountId);
   const recentDeliveries = listPhotonDeliveries(account.accountId, 10);
+  const unresolvedDeliveries = listUnresolvedPhotonDeliveries(account.accountId, 30_000, 10);
+  const unresolvedTransportError = hasUnresolvedDoctorTransportError(status);
+  const unresolvedStreamReconnect = hasUnresolvedDoctorStreamReconnect(status);
+  const ok = Boolean(running) && !unresolvedTransportError && !unresolvedStreamReconnect && unresolvedDeliveries.length === 0;
   return jsonActionResult({
-    ok: Boolean(running),
+    ok,
     channel: CHANNEL_ID,
     action: "photonDoctor",
     accountId: account.accountId,
@@ -758,9 +768,13 @@ function doctorResult(account: ResolvedPhotonAccount, running: RunningPhotonAcco
     dangerousNativeActions: account.dangerousNativeActions,
     effectsDefault: false,
     customMiniAppsExposed: true,
+    health: {
+      unresolvedTransportError,
+      unresolvedStreamReconnect,
+      unresolvedDeliveries: unresolvedDeliveries.length,
+    },
     state: {
-      ...persisted,
-      ...(running?.status ?? {}),
+      ...status,
       running: Boolean(running),
       cachedSpaces: running?.spaces.size ?? spaces.length,
       cachedMessages: running?.messages.size ?? undefined,
@@ -768,10 +782,14 @@ function doctorResult(account: ResolvedPhotonAccount, running: RunningPhotonAcco
       persistedSpaces: spaces.length,
     },
     recentDeliveries,
+    unresolvedDeliveries,
   });
 }
 
-export function createPhotonMessageActions(runningAccounts: Map<string, RunningPhotonAccount>) {
+export function createPhotonMessageActions(
+  runningAccounts: Map<string, RunningPhotonAccount>,
+  options: PhotonActionsOptions = {},
+) {
   return {
     describeMessageTool: ({ cfg, accountId, senderIsOwner }: any) => {
       const account = resolveAccount(cfg, accountId);
@@ -1172,14 +1190,18 @@ export function createPhotonMessageActions(runningAccounts: Map<string, RunningP
       throw new Error(`Photon action ${action} is not supported.`);
       } catch (error) {
         running.status = notePhotonActionError(account.accountId, error);
+        if (isPhotonTransportError(error)) {
+          running.status = notePhotonTransportError(account.accountId, error);
+        }
         if (
           readBoolean(ctx.params, "__photonRetried") !== true &&
+          options.recreateRunning &&
           account.provider === "imessage" &&
           !account.local &&
           isPhotonTransportError(error)
         ) {
-          running = await recreateRunningPhotonApp(runningAccounts, account, running);
-          return createPhotonMessageActions(runningAccounts).handleAction({
+          running = await options.recreateRunning(account, running);
+          return createPhotonMessageActions(runningAccounts, options).handleAction({
             ...ctx,
             params: { ...ctx.params, __photonRetried: true },
           });

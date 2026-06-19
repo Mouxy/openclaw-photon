@@ -11,6 +11,9 @@ test("resolves safe defaults", () => {
   assert.equal(account.sendReadReceipts, true);
   assert.equal(account.typingIndicators, true);
   assert.equal(account.progressUpdates, true);
+  assert.equal(account.inboundBatching, true);
+  assert.equal(account.inboundBatchDelayMs, 2_500);
+  assert.equal(account.inboundBatchMaxDelayMs, 8_000);
   assert.equal(account.longTurnNotice, false);
   assert.equal(account.longTurnNoticeDelayMs, 45_000);
   assert.equal(account.maxInboundAttachmentBytes, 20 * 1024 * 1024);

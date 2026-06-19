@@ -3,6 +3,7 @@ import { resolveAccount } from "./config.js";
 import { createPhotonMessageActions } from "./actions.js";
 import { CHANNEL_ID, type PhotonNormalizedInbound, type ResolvedPhotonAccount, type RunningPhotonAccount } from "./types.js";
 import { replyPhotonRich, replyPhotonText } from "./spectrum.js";
+import { getPhotonStatus, listUnresolvedPhotonDeliveries, listPersistedSpaces } from "./state.js";
 
 const EFFECT_ALIASES = [
   "slam",
@@ -34,11 +35,28 @@ const TEXT_EFFECT_ALIASES = [
 type DirectCommandContext = {
   account: ResolvedPhotonAccount;
   cfg: any;
+  createActions?: () => {
+    handleAction: (ctx: any) => Promise<any>;
+  };
   message: Message;
   normalized: PhotonNormalizedInbound;
   running: RunningPhotonAccount;
   space: Space;
 };
+
+function hasUnresolvedTransportError(status: ReturnType<typeof getPhotonStatus>): boolean {
+  const errorAt = status.lastTransportErrorAt ?? 0;
+  if (!errorAt || !status.lastTransportError) return false;
+  const recoveredAt = Math.max(status.lastTransportRecoveryAt ?? 0, status.lastOutboundAt ?? 0);
+  return errorAt > recoveredAt;
+}
+
+function hasUnresolvedStreamReconnect(status: ReturnType<typeof getPhotonStatus>): boolean {
+  const reconnectAt = status.lastStreamReconnectAt ?? 0;
+  if (!reconnectAt) return false;
+  const recoveredAt = Math.max(status.lastTransportRecoveryAt ?? 0, status.lastInboundAt ?? 0, status.lastOutboundAt ?? 0);
+  return reconnectAt > recoveredAt;
+}
 
 function parseDirectCommand(body: string): { name: string; args: string } | undefined {
   const trimmed = body.trimStart();
@@ -48,6 +66,10 @@ function parseDirectCommand(body: string): { name: string; args: string } | unde
     name: match[1]!.trim().toLowerCase(),
     args: match[2]?.trimStart() ?? "",
   };
+}
+
+export function isPhotonDirectCommandText(body: string): boolean {
+  return Boolean(parseDirectCommand(body));
 }
 
 function miniAppDefaultsStatus(account: ResolvedPhotonAccount): string {
@@ -76,18 +98,27 @@ export function buildPhotonAppsSummary(account: ResolvedPhotonAccount): string {
 }
 
 export function buildPhotonDoctorSummary(account: ResolvedPhotonAccount, running: RunningPhotonAccount): string {
-  const status = running.status ?? {};
+  const status = { ...(running.status ?? {}), ...getPhotonStatus(account.accountId) };
+  const unresolvedDeliveries = listUnresolvedPhotonDeliveries(account.accountId, 30_000, 10);
+  const unresolvedTransportError = hasUnresolvedTransportError(status);
+  const unresolvedStreamReconnect = hasUnresolvedStreamReconnect(status);
+  const ok = Boolean(running) && !unresolvedTransportError && !unresolvedStreamReconnect && unresolvedDeliveries.length === 0;
+  const cachedSpaces = running.spaces.size || listPersistedSpaces(account.accountId).length;
   return [
     "Photon doctor",
     "",
     `- account: ${account.accountId}`,
     `- provider: ${account.provider}${account.local ? " local" : " remote"}`,
-    `- running: yes`,
+    `- running: ${running ? "yes" : "no"}`,
+    `- health: ${ok ? "ok" : "degraded"}`,
     `- direct policy: ${account.dmPolicy}`,
     `- native actions: ${account.nativeActions ? "on" : "off"}`,
-    `- cached spaces: ${running.spaces.size}`,
+    `- cached spaces: ${cachedSpaces}`,
     `- cached messages: ${running.messages.size}`,
     `- reaction handles: ${running.reactionMessages.size}`,
+    unresolvedTransportError ? `- unresolved transport error: ${status.lastTransportError}` : "",
+    unresolvedStreamReconnect ? `- unresolved stream reconnect: ${status.lastStreamError ?? "stream ended"}` : "",
+    unresolvedDeliveries.length > 0 ? `- unresolved deliveries: ${unresolvedDeliveries.length} (${unresolvedDeliveries.map((delivery) => delivery.id).join(", ")})` : "",
     status.lastStreamError ? `- last stream error: ${status.lastStreamError}` : "",
     status.lastActionError ? `- last action error: ${status.lastActionError}` : "",
     status.lastMediaError ? `- last media error: ${status.lastMediaError}` : "",
@@ -117,7 +148,7 @@ async function sendEffectCommand(ctx: DirectCommandContext, args: string): Promi
     return;
   }
 
-  const actions = createPhotonMessageActions(new Map([[ctx.account.accountId, ctx.running]]));
+  const actions = ctx.createActions?.() ?? createPhotonMessageActions(new Map([[ctx.account.accountId, ctx.running]]));
   await actions.handleAction({
     action: "sendWithEffect",
     cfg: ctx.cfg,
@@ -144,7 +175,7 @@ async function sendTextAnimationCommand(ctx: DirectCommandContext, args: string)
     return;
   }
 
-  const actions = createPhotonMessageActions(new Map([[ctx.account.accountId, ctx.running]]));
+  const actions = ctx.createActions?.() ?? createPhotonMessageActions(new Map([[ctx.account.accountId, ctx.running]]));
   await actions.handleAction({
     action: "sendWithEffect",
     cfg: ctx.cfg,

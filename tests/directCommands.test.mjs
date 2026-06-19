@@ -12,6 +12,7 @@ const {
   buildPhotonEffectsSummary,
   handlePhotonDirectCommand,
 } = await import(`../dist/src/directCommands.js?test=${Date.now()}`);
+const state = await import("../dist/src/state.js");
 
 function account(extra = {}) {
   return {
@@ -94,6 +95,23 @@ test("summarizes direct Photon command affordances", () => {
   assert.match(buildPhotonAppsSummary(account()), /\/animate <name> <message>/);
   assert.match(buildPhotonAppsSummary(account()), /mini-app defaults: missing appName, teamId, extensionBundleId, url/);
   assert.match(buildPhotonDoctorSummary(account(), mockContext("/doctor").running), /Photon doctor/);
+});
+
+test("direct Photon doctor reports unresolved delivery degradation", () => {
+  state.rememberPhotonDelivery("default", {
+    id: "cmd-stalled",
+    inboundMessageId: "cmd-stalled",
+    spaceId: "space-1",
+    status: "accepted",
+    receivedAt: Date.now() - 60_000,
+    acceptedAt: Date.now() - 60_000,
+    updatedAt: Date.now() - 60_000,
+  });
+
+  const summary = buildPhotonDoctorSummary(account(), mockContext("/doctor").running);
+
+  assert.match(summary, /health: degraded/);
+  assert.match(summary, /unresolved deliveries: 1 \(cmd-stalled\)/);
 });
 
 test("handles direct read-only Photon commands before model dispatch", async () => {

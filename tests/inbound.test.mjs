@@ -23,3 +23,34 @@ test("local Messages attachment lookup ignores generic attachment labels", () =>
     undefined,
   );
 });
+
+test("batched Photon messages combine close follow-ups into one grouped content payload", () => {
+  const first = {
+    id: "msg-1",
+    content: { type: "text", text: "Can we improve batching?" },
+    sender: { id: "+447" },
+    timestamp: new Date(1000),
+    direction: "inbound",
+    platform: "iMessage",
+  };
+  const second = {
+    id: "msg-2",
+    content: { type: "text", text: "Like now for example..." },
+    sender: { id: "+447" },
+    timestamp: new Date(2000),
+    direction: "inbound",
+    platform: "iMessage",
+  };
+
+  const batched = inbound.createBatchedPhotonMessage([first, second]);
+
+  assert.equal(batched.id, "msg-2");
+  assert.deepEqual(batched.photonBatchMessageIds, ["msg-1", "msg-2"]);
+  assert.equal(batched.sender.id, "+447");
+  assert.equal(batched.timestamp, second.timestamp);
+  assert.equal(batched.content.type, "group");
+  assert.deepEqual(
+    batched.content.items.map((item) => item.content.text),
+    ["Can we improve batching?", "Like now for example..."],
+  );
+});

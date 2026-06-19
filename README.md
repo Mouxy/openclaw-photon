@@ -21,6 +21,9 @@ OpenClaw's channel runtime.
       "mentionNames": ["OpenClaw", "Assistant"],
       "sendReadReceipts": true,
       "typingIndicators": true,
+      "inboundBatching": true,
+      "inboundBatchDelayMs": 2500,
+      "inboundBatchMaxDelayMs": 8000,
       "dispatchControlEvents": false,
       "dispatchPollVotes": true,
       "maxInboundAttachmentBytes": 20971520,
@@ -61,6 +64,9 @@ The intended production profile is cloud iMessage through Photon/Spectrum:
       "mentionNames": ["OpenClaw", "Assistant"],
       "sendReadReceipts": true,
       "typingIndicators": true,
+      "inboundBatching": true,
+      "inboundBatchDelayMs": 2500,
+      "inboundBatchMaxDelayMs": 8000,
       "dispatchControlEvents": false,
       "dispatchPollVotes": true,
       "nativeActions": true,
@@ -90,10 +96,14 @@ agent:
   iMessage chats; sending a mini-app card into a group remains owner-gated.
 - `sendReadReceipts=true` marks accepted inbound iMessages read best-effort in
   remote iMessage mode. Local mode does not send read receipts.
-- `typingIndicators=true` refreshes the iMessage typing indicator about every 10
+- `typingIndicators=true` refreshes the iMessage typing indicator about every 4
   seconds while long-running accepted messages are processed. It suppresses
   visible tool/progress chatter so the chat only gets the final reply.
   `progressUpdates` remains a backwards-compatible alias for older configs.
+- `inboundBatching=true` waits briefly for close follow-up messages from the
+  same chat before dispatching one combined agent turn. The default quiet window
+  is `inboundBatchDelayMs=2500`, capped by `inboundBatchMaxDelayMs=8000` so a
+  rapid burst cannot delay indefinitely.
 - `dispatchControlEvents=false` records noisy lightweight controls such as
   typing without starting a fresh agent turn. Tapbacks and unsends are surfaced
   as normal inbound context because they are deliberate user-visible message

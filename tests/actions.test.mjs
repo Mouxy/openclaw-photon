@@ -313,7 +313,34 @@ test("reports Photon doctor status through an OpenClaw-shaped tool result", asyn
   assert.equal(result.details.action, "photonDoctor");
   assert.equal(result.details.effectsDefault, false);
   assert.equal(result.details.customMiniAppsExposed, true);
+  assert.deepEqual(result.details.health, {
+    unresolvedTransportError: false,
+    unresolvedStreamReconnect: false,
+    unresolvedDeliveries: 0,
+  });
   assert.equal(result.details.state.cachedSpaces, 1);
+});
+
+test("marks Photon doctor unhealthy while transport errors are unresolved", async () => {
+  const { running } = mockRunning();
+  running.status = {
+    running: true,
+    lastTransportError: "Connection dropped",
+    lastTransportErrorAt: 2000,
+    lastTransportRecoveryAt: 1000,
+    updatedAt: 2000,
+  };
+  const actions = createPhotonMessageActions(new Map([["default", running]]));
+
+  const result = await actions.handleAction({
+    action: "photonDoctor",
+    cfg: cfg(),
+    params: {},
+    senderIsOwner: true,
+  });
+
+  assert.equal(result.details.ok, false);
+  assert.equal(result.details.health.unresolvedTransportError, true);
 });
 
 test("advertises direct mini-app cards while owner-gating group controls", () => {

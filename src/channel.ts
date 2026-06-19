@@ -1,10 +1,18 @@
 import { DEFAULT_ACCOUNT_ID as _DEFAULT_ACCOUNT_ID } from "openclaw/plugin-sdk/core";
 import { waitUntilAbort } from "openclaw/plugin-sdk/channel-lifecycle";
-import { CHANNEL_ID, type RunningPhotonAccount } from "./types.js";
+import type { Message, Space } from "spectrum-ts";
+import { CHANNEL_ID, type ResolvedPhotonAccount, type RunningPhotonAccount } from "./types.js";
 import { PhotonConfigSchema, listAccountIds, resolveAccount } from "./config.js";
 import { getPhotonRuntime } from "./runtime.js";
 import { createPhotonApp, rememberPhotonMessage, replyPhotonRich, sendPhotonRich, sendPhotonTyping, stopPhotonApp } from "./spectrum.js";
-import { handlePhotonInbound } from "./inbound.js";
+import {
+  createBatchedPhotonMessage,
+  handlePhotonInbound,
+  isPhotonControlEventContent,
+  normalizePhotonInbound,
+  shouldIgnorePhotonControlEvent,
+} from "./inbound.js";
+import { isPhotonDirectCommandText } from "./directCommands.js";
 import { createPhotonMessageActions } from "./actions.js";
 import {
   getPhotonStatus,
@@ -15,15 +23,45 @@ import {
   notePhotonStarted,
   notePhotonStopped,
   notePhotonStreamReconnect,
+  notePhotonTransportError,
   rememberProcessedPersistedMessage,
   updatePhotonStatus,
+  listUnresolvedPhotonDeliveries,
 } from "./state.js";
 
 const DEFAULT_ACCOUNT_ID = _DEFAULT_ACCOUNT_ID ?? "default";
 
 const runningAccounts = new Map<string, RunningPhotonAccount>();
+const recreationLocks = new Map<string, Promise<RunningPhotonAccount>>();
+const inboundBatches = new Map<string, PendingInboundBatch>();
 const DEDUPE_WINDOW_MS = 48 * 60 * 60 * 1000;
 const DEDUPE_MAX_SIZE = 4000;
+const INFLIGHT_LEASE_MS = 10 * 60 * 1000;
+
+const photonAppLifecycle = {
+  create: createPhotonApp,
+  stop: stopPhotonApp,
+};
+
+type PendingInboundBatch = {
+  account: ResolvedPhotonAccount;
+  cfg: any;
+  core: any;
+  firstQueuedAt: number;
+  flushTimer?: ReturnType<typeof setTimeout>;
+  maxTimer?: ReturnType<typeof setTimeout>;
+  messages: Message[];
+  runtime: { log?: (message: string) => void; error?: (message: string) => void };
+  running: RunningPhotonAccount;
+  sendReply: (input: {
+    message: Message;
+    space: Space;
+    text: string;
+    mediaUrls: string[];
+  }) => Promise<any>;
+  space: Space;
+  typingStarted?: boolean;
+};
 
 function normalizeAllowEntry(entry: string): string {
   return entry.trim().toLowerCase();
@@ -36,7 +74,7 @@ function pruneSeenMessages(seenMessages: Map<string, number>, now: number): void
   }
 }
 
-function isDuplicateMessage(running: RunningPhotonAccount, accountId: string, messageId: string): boolean {
+function tryAcquireMessage(running: RunningPhotonAccount, accountId: string, messageId: string): boolean {
   if (!messageId) return false;
   const now = Date.now();
   pruneSeenMessages(running.seenMessages, now);
@@ -45,8 +83,23 @@ function isDuplicateMessage(running: RunningPhotonAccount, accountId: string, me
     running.seenMessages.set(messageId, now);
     return true;
   }
-  running.seenMessages.set(messageId, now);
+  running.inflightMessages ??= new Map<string, number>();
+  const inflightAt = running.inflightMessages.get(messageId);
+  if (inflightAt && now - inflightAt <= INFLIGHT_LEASE_MS) return true;
+  running.inflightMessages.set(messageId, now);
   return false;
+}
+
+function acknowledgeMessage(running: RunningPhotonAccount, accountId: string, messageId: string): void {
+  if (!messageId) return;
+  running.inflightMessages?.delete(messageId);
+  running.seenMessages.set(messageId, Date.now());
+  rememberProcessedPersistedMessage(accountId, messageId);
+}
+
+function releaseMessage(running: RunningPhotonAccount, messageId: string): void {
+  if (!messageId) return;
+  running.inflightMessages?.delete(messageId);
 }
 
 async function sleepWithAbort(ms: number, abortSignal?: AbortSignal): Promise<void> {
@@ -72,7 +125,9 @@ function isPhotonTransportError(error: unknown): boolean {
     message.includes("stream interrupted") ||
     message.includes("ConnectionError") ||
     message.includes("fetch failed") ||
-    message.includes("temporarily unavailable")
+    message.includes("temporarily unavailable") ||
+    message.includes("DEADLINE_EXCEEDED") ||
+    message.includes("Connection dropped")
   );
 }
 
@@ -84,7 +139,7 @@ async function startPhotonAppWithRetry(
   let backoffMs = 1000;
   while (!abortSignal?.aborted) {
     try {
-      const running = await createPhotonApp(account);
+      const running = await photonAppLifecycle.create(account);
       running.status = notePhotonStarted(account.accountId);
       runningAccounts.set(account.accountId, running);
       log?.info?.(`[photon] started provider=${account.provider} local=${account.local}`);
@@ -105,25 +160,54 @@ async function replaceRunningPhotonApp(
   current: RunningPhotonAccount,
   log?: { info?: (message: string) => void; warn?: (message: string) => void; error?: (message: string) => void },
 ): Promise<RunningPhotonAccount> {
-  log?.warn?.("[photon] recreating Spectrum app after transport interruption");
-  const next = await createPhotonApp(account);
-  // Space objects are tied to the old Spectrum client. Keep durable message
-  // knowledge, but force fresh space resolution after reconnect.
-  next.messages = current.messages;
-  next.reactionMessages = current.reactionMessages;
-  next.seenMessages = current.seenMessages;
-  next.status = current.status;
-  runningAccounts.set(account.accountId, next);
-  await stopPhotonApp(current).catch((error) => log?.warn?.(`[photon] old Spectrum app stop failed: ${String(error)}`));
-  log?.info?.(`[photon] recreated provider=${account.provider} local=${account.local}`);
-  return next;
+  const accountId = account.accountId;
+  const existingLock = recreationLocks.get(accountId);
+  if (existingLock) return existingLock;
+
+  const task = (async () => {
+    const latest = runningAccounts.get(accountId);
+    if (latest !== current) {
+      if (latest) return latest;
+      throw new Error(`Photon account ${accountId} stopped before Spectrum app recreation`);
+    }
+
+    log?.warn?.("[photon] recreating Spectrum app after transport interruption");
+    const next = await photonAppLifecycle.create(account);
+    if (runningAccounts.get(accountId) !== current) {
+      await photonAppLifecycle.stop(next).catch((error) => log?.warn?.(`[photon] superseded Spectrum app stop failed: ${String(error)}`));
+      const newer = runningAccounts.get(accountId);
+      if (newer) return newer;
+      throw new Error(`Photon account ${accountId} stopped during Spectrum app recreation`);
+    }
+
+    // Space objects are tied to the old Spectrum client. Keep durable message
+    // knowledge, but force fresh space resolution after reconnect.
+    next.messages = current.messages;
+    next.reactionMessages = current.reactionMessages;
+    next.seenMessages = current.seenMessages;
+    next.inflightMessages = current.inflightMessages;
+    next.status = current.status;
+    runningAccounts.set(accountId, next);
+    await photonAppLifecycle.stop(current).catch((error) => log?.warn?.(`[photon] old Spectrum app stop failed: ${String(error)}`));
+    log?.info?.(`[photon] recreated provider=${account.provider} local=${account.local}`);
+    return next;
+  })();
+
+  recreationLocks.set(accountId, task);
+  try {
+    return await task;
+  } finally {
+    if (recreationLocks.get(accountId) === task) recreationLocks.delete(accountId);
+  }
 }
 
 function accountStatus(accountId: string) {
   const running = runningAccounts.get(accountId);
+  const persisted = getPhotonStatus(accountId);
+  const runtimeStatus = running?.status ?? {};
   return {
-    ...getPhotonStatus(accountId),
-    ...(running ? running.status : {}),
+    ...runtimeStatus,
+    ...persisted,
     running: Boolean(running),
     cachedSpaces: running?.spaces.size ?? listPersistedSpaces(accountId).length,
     cachedMessages: running?.messages.size ?? undefined,
@@ -137,7 +221,196 @@ function noteOutboundSuccess(accountId: string, result: { messageId: string; cha
     lastOutboundMessageId: result.messageId,
     lastOutboundSpaceId: result.channelId,
     lastActionError: undefined,
+    lastTransportErrorAt: undefined,
+    lastTransportError: undefined,
+    lastTransportRecoveryAt: Date.now(),
   });
+}
+
+function hasUnresolvedTransportError(status: ReturnType<typeof accountStatus>): boolean {
+  const errorAt = status.lastTransportErrorAt ?? 0;
+  if (!errorAt || !status.lastTransportError) return false;
+  const recoveredAt = Math.max(status.lastTransportRecoveryAt ?? 0, status.lastOutboundAt ?? 0);
+  return errorAt > recoveredAt;
+}
+
+function hasUnresolvedStreamReconnect(status: ReturnType<typeof accountStatus>): boolean {
+  const reconnectAt = status.lastStreamReconnectAt ?? 0;
+  if (!reconnectAt) return false;
+  const recoveredAt = Math.max(status.lastTransportRecoveryAt ?? 0, status.lastInboundAt ?? 0, status.lastOutboundAt ?? 0);
+  return reconnectAt > recoveredAt;
+}
+
+function noteActionFailure(accountId: string, error: unknown): void {
+  updatePhotonStatus(accountId, { lastActionError: String(error) });
+  if (isPhotonTransportError(error)) notePhotonTransportError(accountId, error);
+}
+
+function inboundBatchKey(accountId: string, spaceId: string, senderId: string): string {
+  return `${accountId}\0${spaceId}\0${senderId}`;
+}
+
+function isBatchableInbound(params: {
+  account: ResolvedPhotonAccount;
+  message: Message;
+  space: Space;
+}): { batchable: boolean; senderId: string } {
+  const normalized = normalizePhotonInbound(params);
+  if (!normalized.spaceId || !normalized.messageId) return { batchable: false, senderId: normalized.senderId };
+  if (params.message.direction === "outbound") return { batchable: false, senderId: normalized.senderId };
+  if (isPhotonControlEventContent(params.message.content) && shouldIgnorePhotonControlEvent(params.account, params.message.content)) {
+    return { batchable: false, senderId: normalized.senderId };
+  }
+  if (!normalized.rawBody) return { batchable: false, senderId: normalized.senderId };
+  if (normalized.chatType === "direct" && isPhotonDirectCommandText(normalized.rawBody)) {
+    return { batchable: false, senderId: normalized.senderId };
+  }
+  return { batchable: true, senderId: normalized.senderId };
+}
+
+function clearBatchTimers(batch: PendingInboundBatch): void {
+  if (batch.flushTimer) clearTimeout(batch.flushTimer);
+  if (batch.maxTimer) clearTimeout(batch.maxTimer);
+  batch.flushTimer = undefined;
+  batch.maxTimer = undefined;
+}
+
+function flushInboundBatch(key: string): void {
+  const batch = inboundBatches.get(key);
+  if (!batch) return;
+  inboundBatches.delete(key);
+  clearBatchTimers(batch);
+
+  const batchedMessage = createBatchedPhotonMessage(batch.messages);
+  const messageIds = batch.messages.map((message) => String(message?.id ?? "")).filter(Boolean);
+  const running = runningAccounts.get(batch.account.accountId);
+  if (!running) {
+    for (const messageId of messageIds) releaseMessage(batch.running, messageId);
+    batch.runtime.log?.(`[photon] dropped queued batch after account stopped messages=${messageIds.length}`);
+    return;
+  }
+  const space = running.spaces.get(batch.space.id) ?? batch.space;
+  const stopTyping = async () => {
+    if (!batch.typingStarted || !batch.account.typingIndicators) return;
+    await sendPhotonTyping(running, space.id, "stop").catch((error) => {
+      batch.runtime.log?.(`photon: debounce typing stop failed: ${String(error)}`);
+    });
+  };
+
+  void handlePhotonInbound({
+    account: batch.account,
+    cfg: batch.cfg,
+    core: batch.core,
+    running,
+    space,
+    message: batchedMessage,
+    sendReply: batch.sendReply,
+    createActions: () => createPhotonMessageActions(runningAccounts, {
+      recreateRunning: (account, current) => replaceRunningPhotonApp(account, current),
+    }),
+    runtime: batch.runtime,
+  }).then((result) => {
+    for (const messageId of messageIds) {
+      if (result.shouldAcknowledge) acknowledgeMessage(running, batch.account.accountId, messageId);
+      else releaseMessage(running, messageId);
+    }
+    if (!result.accepted) {
+      batch.runtime.log?.(`[photon] ignored space=${result.normalized.spaceId}: ${result.reason}`);
+    }
+  }).catch((error) => {
+    for (const messageId of messageIds) releaseMessage(running, messageId);
+    batch.runtime.error?.(`[photon] inbound handling failed: ${String(error)}`);
+  }).finally(() => {
+    void stopTyping();
+  });
+}
+
+function enqueuePhotonInbound(params: Omit<PendingInboundBatch, "firstQueuedAt" | "flushTimer" | "maxTimer" | "messages"> & {
+  message: Message;
+}): void {
+  const delayMs = params.account.inboundBatching ? params.account.inboundBatchDelayMs : 0;
+  const maxDelayMs = Math.max(params.account.inboundBatchMaxDelayMs, delayMs);
+  if (delayMs <= 0) {
+    void handlePhotonInbound({
+      account: params.account,
+      cfg: params.cfg,
+      core: params.core,
+      running: params.running,
+      space: params.space,
+      message: params.message,
+      sendReply: params.sendReply,
+      createActions: () => createPhotonMessageActions(runningAccounts, {
+        recreateRunning: (account, current) => replaceRunningPhotonApp(account, current),
+      }),
+      runtime: params.runtime,
+    }).then((result) => {
+      if (result.shouldAcknowledge) {
+        acknowledgeMessage(params.running, params.account.accountId, String(params.message?.id ?? ""));
+      } else {
+        releaseMessage(params.running, String(params.message?.id ?? ""));
+      }
+      if (!result.accepted) {
+        params.runtime.log?.(`[photon] ignored space=${result.normalized.spaceId}: ${result.reason}`);
+      }
+    }).catch((error) => {
+      releaseMessage(params.running, String(params.message?.id ?? ""));
+      params.runtime.error?.(`[photon] inbound handling failed: ${String(error)}`);
+    });
+    return;
+  }
+
+  const batchable = isBatchableInbound(params);
+  if (!batchable.batchable) {
+    enqueuePhotonInbound({ ...params, account: { ...params.account, inboundBatching: false } });
+    return;
+  }
+
+  const key = inboundBatchKey(params.account.accountId, params.space.id, batchable.senderId);
+  const now = Date.now();
+  const batch = inboundBatches.get(key) ?? {
+    account: params.account,
+    cfg: params.cfg,
+    core: params.core,
+    firstQueuedAt: now,
+    messages: [],
+    runtime: params.runtime,
+    running: params.running,
+    sendReply: params.sendReply,
+    space: params.space,
+  };
+  batch.account = params.account;
+  batch.cfg = params.cfg;
+  batch.core = params.core;
+  batch.runtime = params.runtime;
+  batch.running = params.running;
+  batch.sendReply = params.sendReply;
+  batch.space = params.space;
+  batch.messages.push(params.message);
+  inboundBatches.set(key, batch);
+
+  if (batch.flushTimer) clearTimeout(batch.flushTimer);
+  batch.flushTimer = setTimeout(() => flushInboundBatch(key), delayMs);
+  batch.flushTimer.unref?.();
+  if (!batch.maxTimer) {
+    batch.maxTimer = setTimeout(() => flushInboundBatch(key), maxDelayMs);
+    batch.maxTimer.unref?.();
+  }
+
+  if (params.account.typingIndicators && !batch.typingStarted) {
+    batch.typingStarted = true;
+    void sendPhotonTyping(params.running, params.space.id, "start").catch((error) => {
+      params.runtime.log?.(`photon: debounce typing start failed: ${String(error)}`);
+    });
+  }
+}
+
+function clearInboundBatchesForAccount(accountId: string): void {
+  for (const [key, batch] of inboundBatches) {
+    if (batch.account.accountId !== accountId) continue;
+    inboundBatches.delete(key);
+    clearBatchTimers(batch);
+    for (const message of batch.messages) releaseMessage(batch.running, String(message?.id ?? ""));
+  }
 }
 
 export const photonPlugin = {
@@ -232,7 +505,9 @@ export const photonPlugin = {
           raw: space,
         })),
   },
-  actions: createPhotonMessageActions(runningAccounts),
+  actions: createPhotonMessageActions(runningAccounts, {
+    recreateRunning: (account, current) => replaceRunningPhotonApp(account, current),
+  }),
   status: {
     defaultRuntime: {
       accountId: DEFAULT_ACCOUNT_ID,
@@ -244,11 +519,19 @@ export const photonPlugin = {
     probeAccount: async ({ accountId }: any = {}) => {
       const resolvedAccountId = accountId ?? DEFAULT_ACCOUNT_ID;
       const status = accountStatus(resolvedAccountId);
-      const streamReconnectCount = status.streamReconnectCount ?? 0;
+      const unresolvedStreamReconnect = hasUnresolvedStreamReconnect(status);
+      const unresolvedTransportError = hasUnresolvedTransportError(status);
+      const unresolvedDeliveries = listUnresolvedPhotonDeliveries(resolvedAccountId, 30_000, 10);
       return {
-        ok: status.running && !status.lastStreamError && streamReconnectCount === 0,
+        ok: status.running && !unresolvedStreamReconnect && !unresolvedTransportError && unresolvedDeliveries.length === 0,
         state: status.running ? "running" : "stopped",
-        details: status,
+        details: {
+          ...status,
+          unresolvedStreamReconnect,
+          unresolvedTransportError,
+          unresolvedDeliveries: unresolvedDeliveries.length,
+          unresolvedDeliveryIds: unresolvedDeliveries.map((delivery) => delivery.id),
+        },
       };
     },
   },
@@ -269,14 +552,21 @@ export const photonPlugin = {
         running.status = noteOutboundSuccess(account.accountId, result);
         return result;
       } catch (error) {
-        running.status = updatePhotonStatus(account.accountId, { lastActionError: String(error) });
+        noteActionFailure(account.accountId, error);
+        running.status = accountStatus(account.accountId);
         if (account.provider !== "imessage" || account.local || !isPhotonTransportError(error)) throw error;
         running = await replaceRunningPhotonApp(account, running);
-        const result = await sendPhotonRich(running, to, text.slice(0, account.textChunkLimit), [], {
-          maxOutboundAttachmentBytes: account.maxOutboundAttachmentBytes,
-        });
-        running.status = noteOutboundSuccess(account.accountId, result);
-        return result;
+        try {
+          const result = await sendPhotonRich(running, to, text.slice(0, account.textChunkLimit), [], {
+            maxOutboundAttachmentBytes: account.maxOutboundAttachmentBytes,
+          });
+          running.status = noteOutboundSuccess(account.accountId, result);
+          return result;
+        } catch (retryError) {
+          noteActionFailure(account.accountId, retryError);
+          running.status = accountStatus(account.accountId);
+          throw retryError;
+        }
       }
     },
     sendMedia: async ({ to, text, mediaUrl, accountId, cfg }: any) => {
@@ -297,18 +587,25 @@ export const photonPlugin = {
         running.status = noteOutboundSuccess(account.accountId, result);
         return result;
       } catch (error) {
-        running.status = updatePhotonStatus(account.accountId, { lastActionError: String(error) });
+        noteActionFailure(account.accountId, error);
+        running.status = accountStatus(account.accountId);
         if (account.provider !== "imessage" || account.local || !isPhotonTransportError(error)) throw error;
         running = await replaceRunningPhotonApp(account, running);
-        const result = await sendPhotonRich(
-          running,
-          to,
-          String(text ?? "").slice(0, account.textChunkLimit),
-          mediaUrl ? [String(mediaUrl)] : [],
-          { maxOutboundAttachmentBytes: account.maxOutboundAttachmentBytes },
-        );
-        running.status = noteOutboundSuccess(account.accountId, result);
-        return result;
+        try {
+          const result = await sendPhotonRich(
+            running,
+            to,
+            String(text ?? "").slice(0, account.textChunkLimit),
+            mediaUrl ? [String(mediaUrl)] : [],
+            { maxOutboundAttachmentBytes: account.maxOutboundAttachmentBytes },
+          );
+          running.status = noteOutboundSuccess(account.accountId, result);
+          return result;
+        } catch (retryError) {
+          noteActionFailure(account.accountId, retryError);
+          running.status = accountStatus(account.accountId);
+          throw retryError;
+        }
       }
     },
   },
@@ -350,7 +647,7 @@ export const photonPlugin = {
             for await (const [space, message] of running!.app.messages) {
               backoffMs = 1000;
               if (ctx.abortSignal?.aborted) return;
-              if (isDuplicateMessage(running!, account.accountId, String(message?.id ?? ""))) {
+              if (tryAcquireMessage(running!, account.accountId, String(message?.id ?? ""))) {
                 ctx.log?.info?.(`[photon] ignored duplicate message=${String(message?.id ?? "missing")}`);
                 continue;
               }
@@ -361,7 +658,7 @@ export const photonPlugin = {
               });
               try {
                 const core = getPhotonRuntime();
-                const result = await handlePhotonInbound({
+                enqueuePhotonInbound({
                   account,
                   cfg: ctx.cfg,
                   core,
@@ -376,7 +673,8 @@ export const photonPlugin = {
                       if (result) running!.status = noteOutboundSuccess(account.accountId, result);
                       return result;
                     } catch (error) {
-                      running!.status = updatePhotonStatus(account.accountId, { lastActionError: String(error) });
+                      noteActionFailure(account.accountId, error);
+                      running!.status = accountStatus(account.accountId);
                       if (account.provider !== "imessage" || account.local || !isPhotonTransportError(error)) throw error;
                       ctx.log?.warn?.(`[photon] reply failed after transport drop; reconnecting and sending unthreaded fallback: ${String(error)}`);
                       running = await replaceRunningPhotonApp(account, running!, ctx.log);
@@ -392,10 +690,6 @@ export const photonPlugin = {
                     error: (msg: string) => ctx.log?.error?.(msg),
                   },
                 });
-                rememberProcessedPersistedMessage(account.accountId, String(message?.id ?? ""));
-                if (!result.accepted) {
-                  ctx.log?.info?.(`[photon] ignored space=${result.normalized.spaceId}: ${result.reason}`);
-                }
               } catch (error) {
                 ctx.log?.error?.(`[photon] inbound handling failed: ${String(error)}`);
               }
@@ -422,10 +716,28 @@ export const photonPlugin = {
 
       return waitUntilAbort(ctx.abortSignal, async () => {
         runningAccounts.delete(account.accountId);
+        clearInboundBatchesForAccount(account.accountId);
         notePhotonStopped(account.accountId);
-        await stopPhotonApp(running);
+        await photonAppLifecycle.stop(running);
         await loop.catch(() => undefined);
       });
     },
   },
+};
+
+export const __testing = {
+  runningAccounts,
+  recreationLocks,
+  acknowledgeMessage,
+  clearInboundBatchesForAccount,
+  inboundBatches,
+  isBatchableInbound,
+  releaseMessage,
+  replaceRunningPhotonApp,
+  setPhotonAppLifecycleForTests(lifecycle: Partial<typeof photonAppLifecycle>) {
+    const previous = { ...photonAppLifecycle };
+    Object.assign(photonAppLifecycle, lifecycle);
+    return () => Object.assign(photonAppLifecycle, previous);
+  },
+  tryAcquireMessage,
 };
