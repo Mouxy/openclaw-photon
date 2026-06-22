@@ -453,6 +453,64 @@ test("handles read, edit, unsend, effect, poll, aliases, and owner-gated rename"
   );
 });
 
+test("can optimistically acknowledge effect sends before iMessage confirms delivery", async () => {
+  let resolveSend;
+  const sent = [];
+  const space = {
+    id: "space-1",
+    type: "direct",
+    __platform: "iMessage",
+    send: async (content) => {
+      const built = typeof content?.build === "function" ? await content.build() : content;
+      return await new Promise((resolve) => {
+        resolveSend = () => {
+          const message = {
+            id: "sent-later",
+            platform: "iMessage",
+            direction: "outbound",
+            sender: { id: "agent" },
+            content: built,
+            timestamp: new Date(),
+            space,
+          };
+          sent.push(message);
+          resolve(message);
+        };
+      });
+    },
+  };
+  const running = {
+    accountId: "default",
+    app: {},
+    spaces: new Map([["space-1", space]]),
+    messages: new Map(),
+    reactionMessages: new Map(),
+    seenMessages: new Map(),
+    status: {},
+  };
+  const actions = createPhotonMessageActions(new Map([["default", running]]));
+
+  const result = await Promise.race([
+    actions.handleAction({
+      action: "sendWithEffect",
+      cfg: cfg({ effectAck: "optimistic" }),
+      params: { to: "space-1", message: "Fast fireworks", effect: "fireworks" },
+      senderIsOwner: true,
+    }),
+    new Promise((_, reject) => setTimeout(() => reject(new Error("optimistic effect send did not return promptly")), 50)),
+  ]);
+
+  assert.equal(result.details.accepted, true);
+  assert.equal(result.details.effectAck, "optimistic");
+  assert.equal(result.details.messageId, undefined);
+  assert.equal(sent.length, 0);
+
+  resolveSend();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(sent.length, 1);
+  assert.equal(running.messages.has("sent-later"), true);
+});
+
 test("owner-gates advanced iMessage mutation helpers", async () => {
   const { running } = mockRunning();
   const actions = createPhotonMessageActions(new Map([["default", running]]));

@@ -66,6 +66,7 @@ const PhotonAccountSchema = z
     dispatchPollVotes: z.boolean().optional().default(true),
     nativeActions: z.boolean().optional().default(true),
     dangerousNativeActions: z.boolean().optional().default(false),
+    effectAck: z.enum(["confirmed", "optimistic"]).optional().default("confirmed"),
     miniAppDefaults: z
       .object({
         appName: z.preprocess(trimmedString, z.string().optional()),
@@ -145,6 +146,7 @@ export function resolveAccount(cfg: any, accountId?: string | null): ResolvedPho
     dispatchPollVotes: raw.dispatchPollVotes ?? true,
     nativeActions: raw.nativeActions ?? true,
     dangerousNativeActions: raw.dangerousNativeActions ?? false,
+    effectAck: raw.effectAck ?? "confirmed",
     miniAppDefaults: raw.miniAppDefaults ?? {},
   };
 }

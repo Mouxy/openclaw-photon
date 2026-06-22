@@ -30,6 +30,7 @@ import {
   listUnresolvedPhotonDeliveries,
   listPersistedSpaces,
   notePhotonActionError,
+  notePhotonOutbound,
   notePhotonTransportError,
   rememberPersistedReaction,
 } from "./state.js";
@@ -359,6 +360,33 @@ function textEffectId(raw: string | undefined): string | undefined {
     throw new Error("Photon textEffect supports: big, small, shake, nod, explode, ripple, bloom, jitter.");
   }
   return resolved;
+}
+
+function effectAckMode(account: ResolvedPhotonAccount, params: Record<string, unknown>): "confirmed" | "optimistic" {
+  const explicit = readString(params, "effectAck", "effect_ack", "ack", "acknowledgement", "acknowledgment");
+  if (explicit) {
+    const normalized = explicit.toLowerCase();
+    if (["optimistic", "fast", "async", "fire-and-forget", "fire_and_forget"].includes(normalized)) return "optimistic";
+    if (["confirmed", "confirm", "sync"].includes(normalized)) return "confirmed";
+    throw new Error("Photon sendWithEffect effectAck supports: confirmed, optimistic.");
+  }
+  if (readBoolean(params, "fast", "optimistic", "fireAndForget", "fire_and_forget") === true) return "optimistic";
+  return account.effectAck;
+}
+
+function rememberOptimisticEffectSend(
+  account: ResolvedPhotonAccount,
+  running: RunningPhotonAccount,
+  space: Space,
+  pending: Promise<Message | undefined>,
+): void {
+  void pending.then((message) => {
+    if (!message) return;
+    rememberPhotonMessage(running, space, message);
+    notePhotonOutbound(account.accountId, { id: message.id, spaceId: space.id });
+  }).catch((error) => {
+    notePhotonActionError(account.accountId, error);
+  });
 }
 
 function textEffectRange(text: string, params: Record<string, unknown>): { start: number; length: number; phrase?: string } {
@@ -982,24 +1010,39 @@ export function createPhotonMessageActions(
         const text = textParam(ctx.params);
         if (!text) throw new Error("Photon sendWithEffect requires message/text/content.");
         const space = await resolveActionSpace({ ctx, account, running });
+        const ack = effectAckMode(account, ctx.params);
         const textEffect = textEffectId(readString(ctx.params, "textEffect", "text_effect", "animation", "textAnimation", "text_animation"));
         if (textEffect) {
           const effectText = text.slice(0, account.textChunkLimit);
           const range = textEffectRange(effectText, ctx.params);
+          if (ack === "optimistic") {
+            rememberOptimisticEffectSend(account, running, space, sendTextEffectMessage({ account, running, space, text: effectText, textEffect, range }));
+            return actionResult(action, {
+              accepted: true,
+              effectAck: ack,
+              textEffect,
+              range,
+            }, space);
+          }
           const sent = await sendTextEffectMessage({ account, running, space, text: effectText, textEffect, range });
           return actionResult(action, {
             messageId: sent.id,
             messageIds: [sent.id],
+            effectAck: ack,
             textEffect,
             range,
             textEffectMessageId: sent.id,
           }, space);
         }
-        const sent = await sendContent(
-          space,
-          running,
-          effect(markdown(text.slice(0, account.textChunkLimit)), effectId(readString(ctx.params, "effectId", "effect")) as any),
-        );
+        const effectContent = effect(markdown(text.slice(0, account.textChunkLimit)), effectId(readString(ctx.params, "effectId", "effect")) as any);
+        if (ack === "optimistic") {
+          rememberOptimisticEffectSend(account, running, space, sendContent(space, running, effectContent));
+          return actionResult(action, {
+            accepted: true,
+            effectAck: ack,
+          }, space);
+        }
+        const sent = await sendContent(space, running, effectContent);
         const extraMedia = mediaParams(ctx.params);
         const mediaMessages = extraMedia.length
           ? await sendContents(space, running, buildAccountContents(account, "", extraMedia))
@@ -1008,6 +1051,7 @@ export function createPhotonMessageActions(
         return actionResult(action, {
           messageId: messageIds.at(-1),
           messageIds,
+          effectAck: ack,
           effectMessageId: sent?.id,
         }, space);
       }

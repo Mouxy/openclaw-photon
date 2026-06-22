@@ -30,6 +30,7 @@ OpenClaw's channel runtime.
       "maxOutboundAttachmentBytes": 52428800,
       "nativeActions": true,
       "dangerousNativeActions": false,
+      "effectAck": "confirmed",
       "miniAppDefaults": {
         "appName": "Example",
         "teamId": "TEAMID1234",
@@ -71,6 +72,7 @@ The intended production profile is cloud iMessage through Photon/Spectrum:
       "dispatchPollVotes": true,
       "nativeActions": true,
       "dangerousNativeActions": false,
+      "effectAck": "confirmed",
       "maxInboundAttachmentBytes": 20971520,
       "maxOutboundAttachmentBytes": 52428800
     }
@@ -117,6 +119,11 @@ agent:
   rejects oversized local outbound files and buffers before handoff to Spectrum.
 - iMessage bubble/screen effects and iOS text animations are available through
   `sendWithEffect`, but normal sends do not use effects by default.
+- `effectAck="confirmed"` makes `sendWithEffect` wait for iMessage
+  confirmation and return message ids. `effectAck="optimistic"` returns as soon
+  as the effect send is handed off and records any later delivery failure in
+  Photon status. Per-action `effectAck=optimistic` or `fast=true` overrides the
+  account default.
 - `miniAppDefaults` is optional. Use it only when you have real iMessage app
   extension metadata you want Photon to reuse for direct-chat mini-app cards.
   String fields can include `{{runId}}`, `{{phase}}`, `{{step}}`, `{{result}}`,
@@ -285,6 +292,11 @@ Photon exposes Spectrum/iMessage-native behaviour through OpenClaw's shared
 - `sendWithEffect` sends text with iMessage effects such as `slam`, `loud`,
   `gentle`, `invisible`, `confetti`, `fireworks`, `balloons`, `heart`,
   `lasers`, `celebration`, `sparkles`, `spotlight`, or `echo`.
+- By default `sendWithEffect` waits for iMessage confirmation so it can return
+  message ids. Set account config `effectAck: "optimistic"` or pass
+  `effectAck=optimistic`/`fast=true` to return as soon as the effect send is
+  handed off; delivery errors are recorded in Photon status instead of blocking
+  the chat loop.
 - `sendWithEffect` can also send iOS text animations by passing `textEffect`
   instead of `effect`. Supported text effects are `big`, `small`, `shake`,
   `nod`, `explode`, `ripple`, `bloom`, and `jitter`. Pass `phrase` to animate

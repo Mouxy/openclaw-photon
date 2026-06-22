@@ -5,6 +5,7 @@ export const CHANNEL_ID = "photon";
 export type PhotonProvider = "imessage" | "terminal";
 export type DmPolicy = "allowlist" | "pairing" | "open" | "disabled";
 export type GroupPolicy = "allowlist" | "open" | "disabled";
+export type PhotonEffectAck = "confirmed" | "optimistic";
 
 export interface PhotonMiniAppDefaults {
   appName?: string;
@@ -52,6 +53,7 @@ export interface PhotonAccountConfig {
   dispatchPollVotes?: boolean;
   nativeActions?: boolean;
   dangerousNativeActions?: boolean;
+  effectAck?: PhotonEffectAck;
   miniAppDefaults?: PhotonMiniAppDefaults;
 }
 
@@ -85,6 +87,7 @@ export interface ResolvedPhotonAccount {
   dispatchPollVotes: boolean;
   nativeActions: boolean;
   dangerousNativeActions: boolean;
+  effectAck: PhotonEffectAck;
   miniAppDefaults: PhotonMiniAppDefaults;
 }
 

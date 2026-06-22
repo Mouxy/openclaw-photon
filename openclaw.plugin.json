@@ -148,6 +148,12 @@
             "description": "Allow disruptive or user-affecting native actions for non-owners. False keeps group/background changes, advanced poll mutation, stickers, location requests, and Notify Anyway owner-gated.",
             "type": "boolean"
           },
+          "effectAck": {
+            "default": "confirmed",
+            "description": "Acknowledgement mode for sendWithEffect. Optimistic returns before iMessage confirms delivery.",
+            "type": "string",
+            "enum": ["confirmed", "optimistic"]
+          },
           "miniAppDefaults": {
             "default": {},
             "description": "Reusable iMessage extension metadata for direct-chat mini-app cards. Use real app/team/bundle/url values only.",
