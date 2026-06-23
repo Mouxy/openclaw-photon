@@ -4,7 +4,15 @@ import type { Message, Space } from "spectrum-ts";
 import { CHANNEL_ID, type ResolvedPhotonAccount, type RunningPhotonAccount } from "./types.js";
 import { PhotonConfigSchema, listAccountIds, resolveAccount } from "./config.js";
 import { getPhotonRuntime } from "./runtime.js";
-import { createPhotonApp, rememberPhotonMessage, replyPhotonRich, sendPhotonRich, sendPhotonTyping, stopPhotonApp } from "./spectrum.js";
+import {
+  createPhotonApp,
+  isAmbiguousPhotonDeliveryError,
+  rememberPhotonMessage,
+  replyPhotonRich,
+  sendPhotonRich,
+  sendPhotonTyping,
+  stopPhotonApp,
+} from "./spectrum.js";
 import {
   createBatchedPhotonMessage,
   handlePhotonInbound,
@@ -554,6 +562,7 @@ export const photonPlugin = {
       } catch (error) {
         noteActionFailure(account.accountId, error);
         running.status = accountStatus(account.accountId);
+        if (isAmbiguousPhotonDeliveryError(error)) throw error;
         if (account.provider !== "imessage" || account.local || !isPhotonTransportError(error)) throw error;
         running = await replaceRunningPhotonApp(account, running);
         try {
@@ -589,6 +598,7 @@ export const photonPlugin = {
       } catch (error) {
         noteActionFailure(account.accountId, error);
         running.status = accountStatus(account.accountId);
+        if (isAmbiguousPhotonDeliveryError(error)) throw error;
         if (account.provider !== "imessage" || account.local || !isPhotonTransportError(error)) throw error;
         running = await replaceRunningPhotonApp(account, running);
         try {
@@ -675,6 +685,7 @@ export const photonPlugin = {
                     } catch (error) {
                       noteActionFailure(account.accountId, error);
                       running!.status = accountStatus(account.accountId);
+                      if (isAmbiguousPhotonDeliveryError(error)) throw error;
                       if (account.provider !== "imessage" || account.local || !isPhotonTransportError(error)) throw error;
                       ctx.log?.warn?.(`[photon] reply failed after transport drop; reconnecting and sending unthreaded fallback: ${String(error)}`);
                       running = await replaceRunningPhotonApp(account, running!, ctx.log);

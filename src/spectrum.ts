@@ -26,6 +26,15 @@ export type PhotonOutboundResult = {
   };
 };
 
+export function isAmbiguousPhotonDeliveryError(error: unknown): boolean {
+  const message = String((error as any)?.message ?? error ?? "");
+  return (
+    message.includes("DEADLINE_EXCEEDED") ||
+    message.includes("temporarily unavailable") ||
+    message.includes("Service temporarily unavailable")
+  );
+}
+
 export async function createPhotonApp(account: ResolvedPhotonAccount): Promise<RunningPhotonAccount> {
   const provider =
     account.provider === "terminal"
@@ -512,7 +521,8 @@ export async function replyPhotonRich(
       notePhotonOutbound(running.accountId, { id: last?.id, spaceId: fallbackSpace.id });
     }
     return toPhotonOutboundResult(fallbackSpace, allMessages);
-  } catch {
+  } catch (error) {
+    if (isAmbiguousPhotonDeliveryError(error)) throw error;
     const messages = await sendContents(fallbackSpace, contents, running);
     return toPhotonOutboundResult(fallbackSpace, messages);
   }

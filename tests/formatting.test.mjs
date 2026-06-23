@@ -7,7 +7,14 @@ import { test } from "node:test";
 
 process.env.OPENCLAW_HOME = mkdtempSync(path.join(tmpdir(), "photon-formatting-"));
 
-import { buildPhotonContents, formatPhotonMessageBody, normalizeOutboundTarget, sendPhotonRich, sendPhotonText } from "../dist/src/spectrum.js";
+import {
+  buildPhotonContents,
+  formatPhotonMessageBody,
+  normalizeOutboundTarget,
+  replyPhotonRich,
+  sendPhotonRich,
+  sendPhotonText,
+} from "../dist/src/spectrum.js";
 
 test("builds markdown content for iMessage rich text", async () => {
   const [content] = buildPhotonContents("**hello** [site](https://example.com)");
@@ -163,6 +170,28 @@ test("returns delivery-shaped outbound text and media results", async () => {
   assert.equal(mediaResult.messageId, "sent-3");
   assert.deepEqual(mediaResult.meta.messageIds, ["sent-2", "sent-3"]);
   assert.equal(sent.length, 3);
+});
+
+test("does not resend replies after ambiguous iMessage delivery errors", async () => {
+  let fallbackSends = 0;
+  const message = {
+    reply: async () => {
+      throw new Error("/photon.imessage.v1.MessageService/SendTextMessage DEADLINE_EXCEEDED: Service temporarily unavailable. Please retry.");
+    },
+  };
+  const space = {
+    id: "any;-;+15555550100",
+    send: async () => {
+      fallbackSends += 1;
+      return { id: "fallback-sent" };
+    },
+  };
+
+  await assert.rejects(
+    () => replyPhotonRich(message, space, "hello"),
+    /DEADLINE_EXCEEDED/,
+  );
+  assert.equal(fallbackSends, 0);
 });
 
 test("normalizes bare direct targets to Spectrum chat ids", () => {
