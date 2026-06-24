@@ -7,6 +7,7 @@ import { getPhotonRuntime } from "./runtime.js";
 import {
   createPhotonApp,
   isAmbiguousPhotonDeliveryError,
+  normalizeOutboundTarget,
   rememberPhotonMessage,
   replyPhotonRich,
   sendPhotonRich,
@@ -45,6 +46,7 @@ const inboundBatches = new Map<string, PendingInboundBatch>();
 const DEDUPE_WINDOW_MS = 48 * 60 * 60 * 1000;
 const DEDUPE_MAX_SIZE = 4000;
 const INFLIGHT_LEASE_MS = 10 * 60 * 1000;
+const AMBIGUOUS_OUTBOUND_SUPPRESS_MS = 2 * 60 * 1000;
 
 const photonAppLifecycle = {
   create: createPhotonApp,
@@ -108,6 +110,47 @@ function acknowledgeMessage(running: RunningPhotonAccount, accountId: string, me
 function releaseMessage(running: RunningPhotonAccount, messageId: string): void {
   if (!messageId) return;
   running.inflightMessages?.delete(messageId);
+}
+
+function ambiguousOutboundKey(accountId: string, target: string): string {
+  return `${accountId}:${normalizeOutboundTarget(target)}`;
+}
+
+export function shouldSuppressAmbiguousPhotonOutbound(
+  running: RunningPhotonAccount,
+  accountId: string,
+  target: string,
+  now = Date.now(),
+): boolean {
+  const key = ambiguousOutboundKey(accountId, target);
+  const until = running.ambiguousOutboundUntil?.get(key);
+  if (!until) return false;
+  if (until <= now) {
+    running.ambiguousOutboundUntil?.delete(key);
+    return false;
+  }
+  return true;
+}
+
+export function rememberAmbiguousPhotonOutbound(
+  running: RunningPhotonAccount,
+  accountId: string,
+  target: string,
+  now = Date.now(),
+): void {
+  running.ambiguousOutboundUntil ??= new Map<string, number>();
+  running.ambiguousOutboundUntil.set(ambiguousOutboundKey(accountId, target), now + AMBIGUOUS_OUTBOUND_SUPPRESS_MS);
+}
+
+function suppressedAmbiguousOutboundResult(target: string): any {
+  return {
+    channel: CHANNEL_ID,
+    channelId: normalizeOutboundTarget(target),
+    messageId: `ambiguous-suppressed-${Date.now()}`,
+    meta: { messageIds: [] },
+    suppressed: true,
+    reason: "recent-ambiguous-imessage-delivery",
+  };
 }
 
 async function sleepWithAbort(ms: number, abortSignal?: AbortSignal): Promise<void> {
@@ -194,6 +237,7 @@ async function replaceRunningPhotonApp(
     next.reactionMessages = current.reactionMessages;
     next.seenMessages = current.seenMessages;
     next.inflightMessages = current.inflightMessages;
+    next.ambiguousOutboundUntil = current.ambiguousOutboundUntil;
     next.status = current.status;
     runningAccounts.set(accountId, next);
     await photonAppLifecycle.stop(current).catch((error) => log?.warn?.(`[photon] old Spectrum app stop failed: ${String(error)}`));
@@ -553,6 +597,9 @@ export const photonPlugin = {
         throw new Error(`Photon account ${resolvedAccountId} is not running`);
       }
       const account = resolveAccount(cfg, resolvedAccountId);
+      if (account.provider === "imessage" && shouldSuppressAmbiguousPhotonOutbound(running, account.accountId, to)) {
+        return suppressedAmbiguousOutboundResult(to);
+      }
       try {
         const result = await sendPhotonRich(running, to, text.slice(0, account.textChunkLimit), [], {
           maxOutboundAttachmentBytes: account.maxOutboundAttachmentBytes,
@@ -562,7 +609,10 @@ export const photonPlugin = {
       } catch (error) {
         noteActionFailure(account.accountId, error);
         running.status = accountStatus(account.accountId);
-        if (isAmbiguousPhotonDeliveryError(error)) throw error;
+        if (isAmbiguousPhotonDeliveryError(error)) {
+          rememberAmbiguousPhotonOutbound(running, account.accountId, to);
+          throw error;
+        }
         if (account.provider !== "imessage" || account.local || !isPhotonTransportError(error)) throw error;
         running = await replaceRunningPhotonApp(account, running);
         try {
@@ -585,6 +635,9 @@ export const photonPlugin = {
         throw new Error(`Photon account ${resolvedAccountId} is not running`);
       }
       const account = resolveAccount(cfg, resolvedAccountId);
+      if (account.provider === "imessage" && shouldSuppressAmbiguousPhotonOutbound(running, account.accountId, to)) {
+        return suppressedAmbiguousOutboundResult(to);
+      }
       try {
         const result = await sendPhotonRich(
           running,
@@ -598,7 +651,10 @@ export const photonPlugin = {
       } catch (error) {
         noteActionFailure(account.accountId, error);
         running.status = accountStatus(account.accountId);
-        if (isAmbiguousPhotonDeliveryError(error)) throw error;
+        if (isAmbiguousPhotonDeliveryError(error)) {
+          rememberAmbiguousPhotonOutbound(running, account.accountId, to);
+          throw error;
+        }
         if (account.provider !== "imessage" || account.local || !isPhotonTransportError(error)) throw error;
         running = await replaceRunningPhotonApp(account, running);
         try {

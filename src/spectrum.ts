@@ -65,6 +65,7 @@ export async function createPhotonApp(account: ResolvedPhotonAccount): Promise<R
     messages: new Map<string, Message>(),
     reactionMessages: new Map<string, string>(),
     seenMessages: new Map<string, number>(),
+    ambiguousOutboundUntil: new Map<string, number>(),
     status: { running: true, startedAt: Date.now(), updatedAt: Date.now() },
   };
 }

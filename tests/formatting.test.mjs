@@ -15,6 +15,10 @@ import {
   sendPhotonRich,
   sendPhotonText,
 } from "../dist/src/spectrum.js";
+import {
+  rememberAmbiguousPhotonOutbound,
+  shouldSuppressAmbiguousPhotonOutbound,
+} from "../dist/src/channel.js";
 
 test("builds markdown content for iMessage rich text", async () => {
   const [content] = buildPhotonContents("**hello** [site](https://example.com)");
@@ -192,6 +196,16 @@ test("does not resend replies after ambiguous iMessage delivery errors", async (
     /DEADLINE_EXCEEDED/,
   );
   assert.equal(fallbackSends, 0);
+});
+
+test("suppresses repeated outbound sends after ambiguous iMessage delivery errors", () => {
+  const { running } = mockRunningForOutbound();
+  const now = 1_000;
+
+  assert.equal(shouldSuppressAmbiguousPhotonOutbound(running, "default", "+15555550100", now), false);
+  rememberAmbiguousPhotonOutbound(running, "default", "+15555550100", now);
+  assert.equal(shouldSuppressAmbiguousPhotonOutbound(running, "default", "any;-;+15555550100", now + 1_000), true);
+  assert.equal(shouldSuppressAmbiguousPhotonOutbound(running, "default", "+15555550100", now + 121_000), false);
 });
 
 test("normalizes bare direct targets to Spectrum chat ids", () => {

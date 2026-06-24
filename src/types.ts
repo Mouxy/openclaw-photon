@@ -114,6 +114,7 @@ export interface RunningPhotonAccount {
   reactionMessages: Map<string, string>;
   seenMessages: Map<string, number>;
   inflightMessages?: Map<string, number>;
+  ambiguousOutboundUntil?: Map<string, number>;
   status: PhotonRuntimeStatus;
 }
 
