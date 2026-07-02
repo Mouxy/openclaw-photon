@@ -14,6 +14,7 @@ import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { imessage } from "spectrum-ts/providers/imessage";
 import { terminal } from "spectrum-ts/providers/terminal";
+import { closeAdvancedClients } from "./advancedClient.js";
 import { CHANNEL_ID, type ResolvedPhotonAccount, type RunningPhotonAccount } from "./types.js";
 import { notePhotonOutbound, rememberPersistedMessage, rememberPersistedSpace } from "./state.js";
 
@@ -72,7 +73,7 @@ export async function createPhotonApp(account: ResolvedPhotonAccount): Promise<R
 
 export async function stopPhotonApp(running: RunningPhotonAccount | undefined): Promise<void> {
   if (!running) return;
-  await running.app.stop();
+  await Promise.allSettled([running.app.stop(), closeAdvancedClients(running.accountId)]);
 }
 
 export function rememberPhotonMessage(

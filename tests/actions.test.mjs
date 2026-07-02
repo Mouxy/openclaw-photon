@@ -789,3 +789,141 @@ test("handles reply and upload-file with media result ids", async () => {
   assert.equal(uploadResult.details.messageIds.length, 2);
   assert.ok(uploadResult.details.messageIds.every((id) => id.startsWith("sent-")));
 });
+
+test("edit sends plain text content because iMessage edits are text-only", async () => {
+  const { calls, running } = mockRunning();
+  const actions = createPhotonMessageActions(new Map([["default", running]]));
+
+  await actions.handleAction({
+    action: "edit",
+    cfg: cfg(),
+    params: { to: "space-1", messageId: "out-1", message: "**updated** text" },
+    senderIsOwner: true,
+  });
+
+  const editCall = calls.find((call) => call[0] === "edit");
+  assert.ok(editCall);
+  assert.equal(editCall[1].type, "text");
+  assert.equal(editCall[1].text, "**updated** text");
+});
+
+test("edit and unsend skip the inbound trigger message when no messageId is given", async () => {
+  const { calls, running } = mockRunning();
+  const inbound = running.messages.get("msg-1");
+  const outbound = running.messages.get("out-1");
+  const space = running.spaces.get("space-1");
+
+  state.rememberPersistedMessage(running.accountId, {
+    id: outbound.id,
+    spaceId: space.id,
+    platform: "iMessage",
+    direction: "outbound",
+    updatedAt: 10,
+  });
+  state.rememberPersistedMessage(running.accountId, {
+    id: inbound.id,
+    spaceId: space.id,
+    platform: "iMessage",
+    direction: "inbound",
+    updatedAt: 20,
+  });
+
+  const actions = createPhotonMessageActions(new Map([["default", running]]));
+
+  const unsendResult = await actions.handleAction({
+    action: "unsend",
+    cfg: cfg(),
+    params: {},
+    toolContext: { currentChannelId: "space-1", currentMessageId: "msg-1" },
+    senderIsOwner: true,
+  });
+  assert.equal(unsendResult.details.messageId, "out-1");
+  assert.deepEqual(calls.at(-1), ["unsend"]);
+
+  const editResult = await actions.handleAction({
+    action: "edit",
+    cfg: cfg(),
+    params: { message: "fixed" },
+    toolContext: { currentChannelId: "space-1", currentMessageId: "msg-1" },
+    senderIsOwner: true,
+  });
+  assert.equal(editResult.details.messageId, "out-1");
+});
+
+test("edit and unsend reject an explicitly inbound messageId with a clear error", async () => {
+  const { running } = mockRunning();
+  const actions = createPhotonMessageActions(new Map([["default", running]]));
+
+  await assert.rejects(
+    actions.handleAction({
+      action: "unsend",
+      cfg: cfg(),
+      params: { to: "space-1", messageId: "msg-1" },
+      senderIsOwner: true,
+    }),
+    /agent sent/,
+  );
+});
+
+test("edit and unsend propagate spectrum errors when no advanced fallback is possible", async () => {
+  const { running } = mockRunning();
+  const space = running.spaces.get("space-1");
+  space.send = async () => {
+    throw new Error("upstream 500");
+  };
+  // cfg() has no projectId/projectSecret, so the advanced fallback is gated off
+  // and the original Spectrum error must surface unchanged.
+  const actions = createPhotonMessageActions(new Map([["default", running]]));
+  await assert.rejects(
+    actions.handleAction({
+      action: "edit",
+      cfg: cfg(),
+      params: { to: "space-1", messageId: "out-1", message: "new text" },
+      senderIsOwner: true,
+    }),
+    /upstream 500/,
+  );
+  await assert.rejects(
+    actions.handleAction({
+      action: "unsend",
+      cfg: cfg(),
+      params: { to: "space-1", messageId: "out-1" },
+      senderIsOwner: true,
+    }),
+    /upstream 500/,
+  );
+});
+
+test("local mode does not advertise or allow edit and unsend", async () => {
+  const { running } = mockRunning();
+  const actions = createPhotonMessageActions(new Map([["default", running]]));
+  const localCfg = cfg({ local: true });
+
+  const description = actions.describeMessageTool({
+    cfg: localCfg,
+    accountId: "default",
+    senderIsOwner: true,
+  });
+  assert.equal(description?.actions?.includes("edit") ?? false, false);
+  assert.equal(description?.actions?.includes("unsend") ?? false, false);
+
+  await assert.rejects(
+    actions.handleAction({
+      action: "edit",
+      cfg: localCfg,
+      params: { to: "space-1", messageId: "out-1", message: "nope" },
+      senderIsOwner: true,
+    }),
+    /remote\/cloud/,
+  );
+
+  await assert.rejects(
+    actions.handleAction({
+      action: "unsend",
+      cfg: localCfg,
+      params: { to: "space-1", messageId: "out-1" },
+      senderIsOwner: true,
+    }),
+    /remote\/cloud/,
+  );
+});

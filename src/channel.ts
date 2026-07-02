@@ -23,6 +23,7 @@ import {
 } from "./inbound.js";
 import { isPhotonDirectCommandText } from "./directCommands.js";
 import { createPhotonMessageActions } from "./actions.js";
+import { photonSetupWizard } from "./setup.js";
 import {
   getPhotonStatus,
   hasProcessedPersistedMessage,
@@ -489,6 +490,7 @@ export const photonPlugin = {
   },
   reload: { configPrefixes: ["channels.photon"] },
   configSchema: PhotonConfigSchema,
+  setupWizard: photonSetupWizard,
   config: {
     listAccountIds: (cfg: any) => listAccountIds(cfg),
     resolveAccount: (cfg: any, accountId?: string | null) => resolveAccount(cfg, accountId),

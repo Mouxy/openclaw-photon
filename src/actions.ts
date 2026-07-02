@@ -1,16 +1,22 @@
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { basename } from "node:path";
-import { createClient, TextEffect, type AdvancedIMessage, type Message as AdvancedIMessageMessage } from "@photon-ai/advanced-imessage";
+import { TextEffect, type Message as AdvancedIMessageMessage } from "@photon-ai/advanced-imessage";
+import {
+  advancedChatId,
+  advancedSpacePhone,
+  advancedTargetMessage,
+  withAdvancedIMessageClient,
+} from "./advancedClient.js";
 import {
   attachment,
-  cloud,
   contact as contactContent,
   edit as editContent,
   markdown,
   poll,
   reaction as reactionContent,
   reply as replyContent,
+  text as textContent,
   unsend as unsendContent,
   voice,
   type ContentInput,
@@ -407,67 +413,8 @@ function textEffectRange(text: string, params: Record<string, unknown>): { start
   return { start, length };
 }
 
-function advancedChatId(space: Space): string {
-  const id = String(space.id ?? "").trim();
-  if (!id) throw new Error("Photon textEffect could not resolve an iMessage chat id.");
-  return id;
-}
-
-function advancedSpacePhone(space: Space): string | undefined {
-  const phone = String((space as any).phone ?? "").trim();
-  return phone || undefined;
-}
-
-async function withAdvancedIMessageClient<T>(
-  account: ResolvedPhotonAccount,
-  space: Space,
-  fn: (client: AdvancedIMessage) => Promise<T>,
-): Promise<T> {
-  if (account.local) throw new Error("Photon textEffect requires remote/cloud iMessage mode.");
-  if (!account.projectId || !account.projectSecret) {
-    throw new Error("Photon textEffect requires Photon projectId/projectSecret credentials.");
-  }
-
-  const tokenData: any = await cloud.issueImessageTokens(account.projectId, account.projectSecret);
-  const clients: Array<{ phone: string; client: AdvancedIMessage }> = [];
-
-  if (tokenData.type === "shared") {
-    const address = process.env.SPECTRUM_IMESSAGE_ADDRESS ?? "imessage.spectrum.photon.codes:443";
-    clients.push({
-      phone: "shared",
-      client: createClient({ address, tls: true, token: async () => tokenData.token }),
-    });
-  } else {
-    const auth = tokenData.auth ?? {};
-    const numbers = tokenData.numbers ?? {};
-    for (const [instanceId, token] of Object.entries(auth)) {
-      const phone = String(numbers[instanceId] ?? "");
-      if (!phone) continue;
-      clients.push({
-        phone,
-        client: createClient({
-          address: `${instanceId}.imsg.photon.codes:443`,
-          tls: true,
-          token: async () => String(token),
-        }),
-      });
-    }
-  }
-
-  if (clients.length === 0) throw new Error("Photon textEffect could not create an advanced iMessage client.");
-  const phone = advancedSpacePhone(space);
-  const entry = clients.length === 1 || clients[0]?.phone === "shared"
-    ? clients[0]
-    : clients.find((candidate) => candidate.phone === phone);
-  if (!entry) {
-    throw new Error(`Photon textEffect could not find a client for phone ${phone ?? "<unknown>"}.`);
-  }
-
-  try {
-    return await fn(entry.client);
-  } finally {
-    await Promise.allSettled(clients.map(({ client }) => client.close()));
-  }
+function canUseAdvancedFallback(account: ResolvedPhotonAccount): boolean {
+  return !account.local && Boolean(account.projectId && account.projectSecret);
 }
 
 function advancedMessageToSpectrumMessage(space: Space, message: AdvancedIMessageMessage, text: string): Message {
@@ -518,8 +465,9 @@ function assertDangerousAllowed(ctx: ActionContext, account: ResolvedPhotonAccou
 }
 
 function assertRemoteForRichNative(account: ResolvedPhotonAccount, action: string): void {
+  // Spectrum's local iMessage mode rejects every message-targeted action,
+  // including edit and unsend (UnsupportedError.action(..., "iMessage (local mode)")).
   if (!account.local) return;
-  if (["edit", "unsend"].includes(action)) return;
   throw new Error(`Photon ${action} requires remote/cloud iMessage mode.`);
 }
 
@@ -561,7 +509,13 @@ async function resolveActionMessage(params: {
   requireMessage?: boolean;
 }): Promise<{ space: Space; message: Message; messageId: string; persistedSpaceId?: string }> {
   const { ctx, account, running } = params;
-  let messageId = explicitMessageId(ctx);
+  const direction = defaultMessageDirectionForAction(ctx.action);
+  let messageId = readString(ctx.params, "messageId", "message_id", "replyTo");
+  if (!messageId && direction !== "outbound") {
+    // The tool context's current message is the inbound message that triggered
+    // this turn — a valid default for read/reply/react, never for edit/unsend.
+    messageId = explicitMessageId(ctx);
+  }
   let space: Space | undefined;
 
   if (!messageId) {
@@ -571,13 +525,19 @@ async function resolveActionMessage(params: {
       const latest = getLatestPersistedMessageForSpace(
         account.accountId,
         space?.id ?? target,
-        defaultMessageDirectionForAction(ctx.action),
+        direction,
       );
       messageId = latest?.id;
     }
   }
 
-  if (!messageId) throw new Error(`Photon ${ctx.action} requires messageId or a current inbound message.`);
+  if (!messageId) {
+    throw new Error(
+      direction === "outbound"
+        ? `Photon ${ctx.action} requires the messageId of a message the agent sent.`
+        : `Photon ${ctx.action} requires messageId or a current inbound message.`,
+    );
+  }
   const persisted = getPersistedMessage(account.accountId, messageId);
 
   let message = running.messages.get(messageId);
@@ -595,6 +555,11 @@ async function resolveActionMessage(params: {
   }
 
   if (!message) throw new Error(`Photon could not resolve message ${messageId}.`);
+  if (direction === "outbound" && message.direction && message.direction !== "outbound") {
+    throw new Error(
+      `Photon ${ctx.action} can only target a message the agent sent; ${messageId} is an inbound message.`,
+    );
+  }
   if ((message as any).space?.id) {
     space = (message as any).space;
   }
@@ -822,7 +787,7 @@ export function createPhotonMessageActions(
     describeMessageTool: ({ cfg, accountId, senderIsOwner }: any) => {
       const account = resolveAccount(cfg, accountId);
       if (!account.enabled || !account.nativeActions || account.provider !== "imessage") return null;
-      const actions = account.local ? ["edit", "unsend"] : [...SAFE_ACTIONS];
+      const actions = account.local ? ["photonDoctor"] : [...SAFE_ACTIONS];
       if (!account.local && (account.dangerousNativeActions || senderIsOwner === true)) {
         actions.push(...DANGEROUS_ACTIONS);
         actions.push(...OWNER_GATED_ADVANCED_ACTIONS);
@@ -977,13 +942,44 @@ export function createPhotonMessageActions(
         const { space, message, messageId } = await resolveActionMessage({ ctx, account, running });
         const text = textParam(ctx.params);
         if (!text) throw new Error("Photon edit requires message/text/newText/content.");
-        await space.send(editContent(firstContent(buildAccountContents(account, text)), message));
+        const editText = text.slice(0, account.textChunkLimit);
+        try {
+          // Spectrum's iMessage provider only accepts plain text inside edit();
+          // markdown or richlink content throws UnsupportedError at send time.
+          await space.send(editContent(textContent(editText), message));
+        } catch (error) {
+          // The Spectrum edit path has returned upstream errors in live
+          // canaries where the direct advanced edit succeeds (see the Hermes
+          // sidecar's identical fallback), so retry through the advanced SDK.
+          if (!canUseAdvancedFallback(account)) throw error;
+          const target = advancedTargetMessage(messageId);
+          await withAdvancedIMessageClient(account, space, (client) =>
+            client.messages.edit(advancedChatId(space), target.messageGuid, editText, {
+              ...(target.partIndex != null ? { partIndex: target.partIndex } : {}),
+              backwardCompatText: editText,
+              clientMessageId: clientMessageId(ctx, messageId),
+            }),
+          );
+          return actionResult(action, { edited: messageId, messageId, method: "advanced" }, space);
+        }
         return actionResult(action, { edited: messageId, messageId }, space);
       }
 
       if (action === "unsend") {
         const { space, messageId, message } = await resolveActionMessage({ ctx, account, running });
-        await space.send(unsendContent(message));
+        try {
+          await space.send(unsendContent(message));
+        } catch (error) {
+          if (!canUseAdvancedFallback(account) || (message as any)?.content?.type === "reaction") throw error;
+          const target = advancedTargetMessage(messageId);
+          await withAdvancedIMessageClient(account, space, (client) =>
+            client.messages.unsend(advancedChatId(space), target.messageGuid, {
+              ...(target.partIndex != null ? { partIndex: target.partIndex } : {}),
+              clientMessageId: clientMessageId(ctx, messageId),
+            }),
+          );
+          return actionResult(action, { unsent: messageId, messageId, method: "advanced" }, space);
+        }
         return actionResult(action, { unsent: messageId, messageId }, space);
       }
 
