@@ -202,9 +202,9 @@ Use the terminal provider to prove OpenClaw routing before iMessage auth:
   persistent-failure escalation.
 - Spectrum's internal `[spectrum.stream]` reconnect logs do not currently
   update Photon persisted runtime status, so `openclaw channels status --probe`
-  can still be green during an internal stream reconnect storm. On Daniel's
-  Mac, `scripts/photon-stream-watchdog.sh` watches the gateway log and restarts
-  the gateway only after repeated or persistent stream degradation.
+  can still be green during an internal stream reconnect storm. On local
+  deployments, `scripts/photon-stream-watchdog.sh` watches the gateway log and
+  restarts the gateway only after repeated or persistent stream degradation.
 - Treat a single `[spectrum.stream] stream interrupted; reconnecting` line as
   degraded, not fatal. Treat repeated lines in a short window, persistent
   failure logs, fresh `PERMISSION_DENIED`, or fresh `Target not allowed` as
