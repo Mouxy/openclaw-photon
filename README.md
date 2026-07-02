@@ -542,14 +542,15 @@ returns from delivery adapters.
   returns `INTERNAL code=13` for every edit within the edit window — on two
   independent projects, including direct advanced-SDK repros. The action
   fails fast (~8s) with the RPC named in the error. Unsend is unaffected.
-- **Poll mutations are project-dependent**: on this project they work
-  (create → vote → `addPollOption`/`pollVote`/`pollUnvote` all verified
-  live). On a second project, `CreatePoll` returns a `spc-msg-*` id and every
-  mutation against it — including that exact returned id — fails with
+- **Poll mutations require a dedicated line**: on a dedicated (business-tier)
+  line, `CreatePoll` returns a native GUID and
+  `addPollOption`/`pollVote`/`pollUnvote` all work (verified live). On a
+  shared line, `CreatePoll` returns a `spc-msg-*` id and every mutation
+  against it — including that exact returned id — fails with
   `No instance routed for this request` (the mutation protos carry no chat
-  guid, so Photon must route by `pollMessageGuid`). If you hit that, the
-  actions surface a classified "could not route" error; report your project
-  id to Photon. Poll creation and inbound vote ingestion work everywhere.
+  guid, so Photon's shared gateway must route by `pollMessageGuid` and
+  doesn't). The actions surface that as a classified "could not route"
+  error. Poll creation and inbound vote ingestion work on both line types.
 
 Retest after Photon confirms fixes; remove this section when both pass.
 
