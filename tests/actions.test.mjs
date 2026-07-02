@@ -917,6 +917,28 @@ test("edit skips the advanced fallback when the upstream EditMessage RPC itself 
   );
 });
 
+test("unsend never bypasses Spectrum's capability refusal via the advanced fallback", async () => {
+  const { running } = mockRunning();
+  const space = running.spaces.get("space-1");
+  space.send = async () => {
+    const error = new Error('unsend is not supported for iMessage: iMessage polls cannot be unsent');
+    error.name = "UnsupportedError";
+    throw error;
+  };
+  // Credentials are configured, so only the capability check can stop the
+  // fallback — if it ran, the poll would be unsent through the raw RPC.
+  const actions = createPhotonMessageActions(new Map([["default", running]]));
+  await assert.rejects(
+    actions.handleAction({
+      action: "unsend",
+      cfg: cfg({ projectId: "proj-1", projectSecret: "sec-1" }),
+      params: { to: "space-1", messageId: "out-1" },
+      senderIsOwner: true,
+    }),
+    /polls cannot be unsent/,
+  );
+});
+
 test("local mode does not advertise or allow edit and unsend", async () => {
   const { running } = mockRunning();
   const actions = createPhotonMessageActions(new Map([["default", running]]));

@@ -19,6 +19,7 @@ import {
   reply as replyContent,
   text as textContent,
   unsend as unsendContent,
+  UnsupportedError,
   voice,
   type ContentInput,
   type Message,
@@ -424,6 +425,14 @@ function canUseAdvancedFallback(account: ResolvedPhotonAccount): boolean {
 // identical endpoint — doubling the latency for the same error.
 function isUpstreamMessageRpcError(error: unknown): boolean {
   return /MessageService\/(Edit|Unsend)Message/.test(String((error as any)?.message ?? error ?? ""));
+}
+
+// Spectrum's UnsupportedError is a deliberate capability refusal (e.g.
+// "iMessage polls cannot be unsent"), not a delivery failure. The advanced
+// fallback must never bypass it — live smoke showed it unsending an active
+// poll that Spectrum had correctly refused to.
+function isSpectrumCapabilityError(error: unknown): boolean {
+  return error instanceof UnsupportedError || (error as any)?.name === "UnsupportedError";
 }
 
 function advancedMessageToSpectrumMessage(space: Space, message: AdvancedIMessageMessage, text: string): Message {
@@ -960,7 +969,13 @@ export function createPhotonMessageActions(
           // The Spectrum edit path has returned upstream errors in live
           // canaries where the direct advanced edit succeeds (see the Hermes
           // sidecar's identical fallback), so retry through the advanced SDK.
-          if (!canUseAdvancedFallback(account) || isUpstreamMessageRpcError(error)) throw error;
+          if (
+            !canUseAdvancedFallback(account) ||
+            isUpstreamMessageRpcError(error) ||
+            isSpectrumCapabilityError(error)
+          ) {
+            throw error;
+          }
           const target = advancedTargetMessage(messageId);
           await withAdvancedIMessageClient(account, space, (client) =>
             client.messages.edit(advancedChatId(space), target.messageGuid, editText, {
@@ -982,7 +997,8 @@ export function createPhotonMessageActions(
           if (
             !canUseAdvancedFallback(account) ||
             (message as any)?.content?.type === "reaction" ||
-            isUpstreamMessageRpcError(error)
+            isUpstreamMessageRpcError(error) ||
+            isSpectrumCapabilityError(error)
           ) {
             throw error;
           }
