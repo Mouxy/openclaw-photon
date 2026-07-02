@@ -536,6 +536,24 @@ JSON with `ok`, `channel`, `action` for action calls, and `channel`,
 `channelId`, `messageId` for normal outbound delivery. Avoid bare boolean
 returns from delivery adapters.
 
+## Known Upstream Faults (2026-07-02)
+
+Two capabilities are currently broken **server-side at Photon** — both
+integrations (OpenClaw and Hermes) fail identically, including direct
+advanced-SDK repros, so no client-side change can fix them:
+
+- **Edit**: `MessageService/EditMessage` returns `INTERNAL code=13` for every
+  edit within the edit window. The action fails fast (~8s) with the RPC named
+  in the error. Unsend is unaffected.
+- **Poll mutations on shared lines**: `AddPollOption`/`VotePoll`/`UnvotePoll`
+  fail with `No instance routed for this request` — the request proto carries
+  no chat guid and Photon's shared-line gateway cannot route by
+  `pollMessageGuid`, even the one its own `CreatePoll` returned (`spc-msg-*`).
+  The actions surface this as a classified "could not route" error. Poll
+  creation and inbound vote ingestion work.
+
+Retest both after Photon confirms a fix; remove this section when they pass.
+
 ## Live Native Matrix
 
 Use this matrix for live iMessage verification after changing Spectrum,
