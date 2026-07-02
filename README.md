@@ -14,11 +14,10 @@ automatically, and writes the config for you.
 Requirements: OpenClaw ≥ 2026.6.10 and Node 20+ on the machine that runs the
 OpenClaw gateway.
 
-1. **Get the code.** The repo is private, so clone with an authenticated
-   GitHub CLI (or any git remote you mirror it to):
+1. **Get the code.**
 
    ```bash
-   gh repo clone Mouxy/openclaw-photon ~/openclaw-photon
+   git clone https://github.com/Mouxy/openclaw-photon.git ~/openclaw-photon
    ```
 
 2. **Install dependencies.** The plugin needs `spectrum-ts` and friends at
