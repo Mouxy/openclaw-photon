@@ -894,6 +894,29 @@ test("edit and unsend propagate spectrum errors when no advanced fallback is pos
   );
 });
 
+test("edit skips the advanced fallback when the upstream EditMessage RPC itself failed", async () => {
+  const { running } = mockRunning();
+  const space = running.spaces.get("space-1");
+  space.send = async () => {
+    throw new Error(
+      "IMessageError: An internal error occurred.: code=internalError <- ClientError: /photon.imessage.v1.MessageService/EditMessage INTERNAL: An internal error occurred.: code=13",
+    );
+  };
+  // Credentials are configured, so only the RPC check can stop the fallback —
+  // if it ran, withAdvancedIMessageClient would fail on token issuance with a
+  // different error than the original one asserted here.
+  const actions = createPhotonMessageActions(new Map([["default", running]]));
+  await assert.rejects(
+    actions.handleAction({
+      action: "edit",
+      cfg: cfg({ projectId: "proj-1", projectSecret: "sec-1" }),
+      params: { to: "space-1", messageId: "out-1", message: "new text" },
+      senderIsOwner: true,
+    }),
+    /MessageService\/EditMessage INTERNAL/,
+  );
+});
+
 test("local mode does not advertise or allow edit and unsend", async () => {
   const { running } = mockRunning();
   const actions = createPhotonMessageActions(new Map([["default", running]]));

@@ -417,6 +417,14 @@ function canUseAdvancedFallback(account: ResolvedPhotonAccount): boolean {
   return !account.local && Boolean(account.projectId && account.projectSecret);
 }
 
+// Spectrum's provider edit/unsend already call the advanced SDK's
+// EditMessage/UnsendMessage RPCs. When the failure names that RPC, the
+// upstream service itself failed and the advanced fallback would re-dial the
+// identical endpoint — doubling the latency for the same error.
+function isUpstreamMessageRpcError(error: unknown): boolean {
+  return /MessageService\/(Edit|Unsend)Message/.test(String((error as any)?.message ?? error ?? ""));
+}
+
 function advancedMessageToSpectrumMessage(space: Space, message: AdvancedIMessageMessage, text: string): Message {
   return {
     id: message.guid,
@@ -951,7 +959,7 @@ export function createPhotonMessageActions(
           // The Spectrum edit path has returned upstream errors in live
           // canaries where the direct advanced edit succeeds (see the Hermes
           // sidecar's identical fallback), so retry through the advanced SDK.
-          if (!canUseAdvancedFallback(account)) throw error;
+          if (!canUseAdvancedFallback(account) || isUpstreamMessageRpcError(error)) throw error;
           const target = advancedTargetMessage(messageId);
           await withAdvancedIMessageClient(account, space, (client) =>
             client.messages.edit(advancedChatId(space), target.messageGuid, editText, {
@@ -970,7 +978,13 @@ export function createPhotonMessageActions(
         try {
           await space.send(unsendContent(message));
         } catch (error) {
-          if (!canUseAdvancedFallback(account) || (message as any)?.content?.type === "reaction") throw error;
+          if (
+            !canUseAdvancedFallback(account) ||
+            (message as any)?.content?.type === "reaction" ||
+            isUpstreamMessageRpcError(error)
+          ) {
+            throw error;
+          }
           const target = advancedTargetMessage(messageId);
           await withAdvancedIMessageClient(account, space, (client) =>
             client.messages.unsend(advancedChatId(space), target.messageGuid, {
