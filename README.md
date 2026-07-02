@@ -4,10 +4,78 @@ Photon connects OpenClaw to Spectrum providers such as iMessage. It is built as
 a normal OpenClaw channel plugin and routes inbound Spectrum messages through
 OpenClaw's channel runtime.
 
-New install? Skip the JSON and use the setup wizard — see
-[Setup (Device-Code Login)](#setup-device-code-login). It signs in to Photon
-with a device code, provisions the project and secret automatically, and
-writes the config for you.
+New install? Follow [Installation](#installation), then let the setup wizard
+do the rest — see [Setup (Device-Code Login)](#setup-device-code-login). It
+signs in to Photon with a device code, provisions the project and secret
+automatically, and writes the config for you.
+
+## Installation
+
+Requirements: OpenClaw ≥ 2026.6.10 and Node 20+ on the machine that runs the
+OpenClaw gateway.
+
+1. **Get the code.** The repo is private, so clone with an authenticated
+   GitHub CLI (or any git remote you mirror it to):
+
+   ```bash
+   gh repo clone Mouxy/openclaw-photon ~/openclaw-photon
+   ```
+
+2. **Install dependencies.** The plugin needs `spectrum-ts` and friends at
+   runtime:
+
+   ```bash
+   cd ~/openclaw-photon && npm install
+   ```
+
+3. **Register the plugin with OpenClaw.** Link the checkout so future
+   `git pull`s take effect without reinstalling:
+
+   ```bash
+   openclaw plugins install --link ~/openclaw-photon
+   ```
+
+   This records the path under `plugins.load.paths` in `openclaw.json` and
+   enables the `photon` plugin entry. (Omit `--link` to copy instead of
+   link; `openclaw plugins install <git-url>` also works if the machine has
+   git credentials for the repo.)
+
+4. **Restart the gateway** so the plugin loads:
+
+   ```bash
+   openclaw gateway restart
+   ```
+
+5. **Verify.** `openclaw plugins list` should show `photon`, and
+   `openclaw plugins doctor` should report no load issues.
+
+6. **Configure the channel.** Run `openclaw onboard`, pick **Photon**, and
+   follow [Setup (Device-Code Login)](#setup-device-code-login) — it
+   provisions credentials, registers your number, and (on business-tier
+   accounts) mini-app card defaults.
+
+7. **Keep it updated.** With a linked install:
+
+   ```bash
+   cd ~/openclaw-photon && git pull && npm install && npm test
+   openclaw gateway restart
+   ```
+
+### Or just ask OpenClaw
+
+If you already have an OpenClaw agent running (on any other channel — CLI,
+Telegram, etc.), you can skip the manual steps and ask it to install the
+integration itself. For example:
+
+> Install the Photon iMessage channel plugin from
+> https://github.com/Mouxy/openclaw-photon — clone it, run npm install and
+> npm test, register it with `openclaw plugins install --link`, restart the
+> gateway, and confirm it shows up in `openclaw plugins list`. Then walk me
+> through the Photon device-code setup.
+
+The device-code login itself needs a human in the loop (you approve the
+browser prompt), but the agent can drive everything around it and tell you
+exactly when to click.
 
 ## Minimal Config
 
