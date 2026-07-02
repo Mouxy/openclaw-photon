@@ -1094,19 +1094,34 @@ export function createPhotonMessageActions(
         // Inbound poll vote/change events carry synthetic "<guid>:…" ids;
         // the advanced poll mutation APIs want the bare poll message guid.
         const pollGuid = pollMessageGuid(pollMessageId);
-        const pollState = await withAdvancedIMessageClient(account, space, (client) => {
-          if (action === "addPollOption") {
-            const text = readString(ctx.params, "option", "text", "title");
-            if (!text) throw new Error("Photon addPollOption requires option/text/title.");
-            return client.polls.addOption(pollGuid, text, { clientMessageId: clientMessageId(ctx, pollGuid) });
+        let pollState;
+        try {
+          pollState = await withAdvancedIMessageClient(account, space, (client) => {
+            if (action === "addPollOption") {
+              const text = readString(ctx.params, "option", "text", "title");
+              if (!text) throw new Error("Photon addPollOption requires option/text/title.");
+              return client.polls.addOption(pollGuid, text, { clientMessageId: clientMessageId(ctx, pollGuid) });
+            }
+            if (action === "pollVote") {
+              const optionId = readString(ctx.params, "optionId", "option_id", "choiceId", "choice_id");
+              if (!optionId) throw new Error("Photon pollVote requires optionId/choiceId.");
+              return client.polls.vote(pollGuid, optionId, { clientMessageId: clientMessageId(ctx, pollGuid) });
+            }
+            return client.polls.unvote(pollGuid, { clientMessageId: clientMessageId(ctx, pollGuid) });
+          });
+        } catch (error) {
+          // Photon's shared-line gateway routes PollService mutations by
+          // pollMessageGuid lookup and currently fails to route even the guid
+          // its own CreatePoll returned. Give the agent the upstream category
+          // instead of the opaque routing error.
+          if (/No instance routed/i.test(String((error as any)?.message ?? error))) {
+            throw new Error(
+              `Photon could not route ${action} to an iMessage instance (PollService lookup by pollMessageGuid ` +
+                `failed upstream). Poll creation and inbound votes are unaffected; report pollMessageId ${pollGuid} to Photon.`,
+            );
           }
-          if (action === "pollVote") {
-            const optionId = readString(ctx.params, "optionId", "option_id", "choiceId", "choice_id");
-            if (!optionId) throw new Error("Photon pollVote requires optionId/choiceId.");
-            return client.polls.vote(pollGuid, optionId, { clientMessageId: clientMessageId(ctx, pollGuid) });
-          }
-          return client.polls.unvote(pollGuid, { clientMessageId: clientMessageId(ctx, pollGuid) });
-        });
+          throw error;
+        }
         return actionResult(action, {
           pollMessageId: pollState.pollMessageGuid,
           optionCount: pollState.options.length,
