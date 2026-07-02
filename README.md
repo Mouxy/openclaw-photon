@@ -538,21 +538,20 @@ returns from delivery adapters.
 
 ## Known Upstream Faults (2026-07-02)
 
-Two capabilities are currently broken **server-side at Photon** — both
-integrations (OpenClaw and Hermes) fail identically, including direct
-advanced-SDK repros, so no client-side change can fix them:
+- **Edit is broken server-side at Photon**: `MessageService/EditMessage`
+  returns `INTERNAL code=13` for every edit within the edit window — on two
+  independent projects, including direct advanced-SDK repros. The action
+  fails fast (~8s) with the RPC named in the error. Unsend is unaffected.
+- **Poll mutations are project-dependent**: on this project they work
+  (create → vote → `addPollOption`/`pollVote`/`pollUnvote` all verified
+  live). On a second project, `CreatePoll` returns a `spc-msg-*` id and every
+  mutation against it — including that exact returned id — fails with
+  `No instance routed for this request` (the mutation protos carry no chat
+  guid, so Photon must route by `pollMessageGuid`). If you hit that, the
+  actions surface a classified "could not route" error; report your project
+  id to Photon. Poll creation and inbound vote ingestion work everywhere.
 
-- **Edit**: `MessageService/EditMessage` returns `INTERNAL code=13` for every
-  edit within the edit window. The action fails fast (~8s) with the RPC named
-  in the error. Unsend is unaffected.
-- **Poll mutations on shared lines**: `AddPollOption`/`VotePoll`/`UnvotePoll`
-  fail with `No instance routed for this request` — the request proto carries
-  no chat guid and Photon's shared-line gateway cannot route by
-  `pollMessageGuid`, even the one its own `CreatePoll` returned (`spc-msg-*`).
-  The actions surface this as a classified "could not route" error. Poll
-  creation and inbound vote ingestion work.
-
-Retest both after Photon confirms a fix; remove this section when they pass.
+Retest after Photon confirms fixes; remove this section when both pass.
 
 ## Live Native Matrix
 
