@@ -48,6 +48,19 @@ export function advancedTargetMessage(messageId: string): { messageGuid: string;
   return { messageGuid: match[2]!, partIndex: Number(match[1]) };
 }
 
+// Spectrum's inbound poll events carry synthetic message ids —
+// "<pollGuid>:<sender>:<optionId>:<vote|unvote>:<timestamp>" for votes and
+// "<pollGuid>:poll:<sequence>" for poll changes — while the advanced poll
+// mutation APIs want the bare poll message guid.
+const POLL_GUID_PREFIX = /^([0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})(?=:)/;
+
+/** Reduce a poll-related message id (poll guid or synthetic event id) to the poll message guid. */
+export function pollMessageGuid(messageId: string): string {
+  const raw = String(messageId ?? "").trim();
+  const match = raw.match(POLL_GUID_PREFIX);
+  return match ? match[1]! : raw;
+}
+
 async function issueTokens(account: ResolvedPhotonAccount, state: AccountAdvancedState): Promise<any> {
   const now = Date.now();
   if (state.tokenCache && now - state.tokenCache.fetchedAt < ADVANCED_TOKEN_TTL_MS) {

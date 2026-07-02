@@ -6,6 +6,7 @@ import {
   advancedChatId,
   advancedSpacePhone,
   advancedTargetMessage,
+  pollMessageGuid,
   withAdvancedIMessageClient,
 } from "./advancedClient.js";
 import {
@@ -1090,18 +1091,21 @@ export function createPhotonMessageActions(
         const pollMessageId = readString(ctx.params, "pollMessageId", "poll_message_id", "pollId", "poll_id") ?? explicitMessageId(ctx);
         if (!pollMessageId) throw new Error(`Photon ${action} requires pollMessageId/messageId.`);
         const space = await resolveActionSpace({ ctx, account, running, messageId: pollMessageId });
+        // Inbound poll vote/change events carry synthetic "<guid>:…" ids;
+        // the advanced poll mutation APIs want the bare poll message guid.
+        const pollGuid = pollMessageGuid(pollMessageId);
         const pollState = await withAdvancedIMessageClient(account, space, (client) => {
           if (action === "addPollOption") {
             const text = readString(ctx.params, "option", "text", "title");
             if (!text) throw new Error("Photon addPollOption requires option/text/title.");
-            return client.polls.addOption(pollMessageId, text, { clientMessageId: clientMessageId(ctx, pollMessageId) });
+            return client.polls.addOption(pollGuid, text, { clientMessageId: clientMessageId(ctx, pollGuid) });
           }
           if (action === "pollVote") {
             const optionId = readString(ctx.params, "optionId", "option_id", "choiceId", "choice_id");
             if (!optionId) throw new Error("Photon pollVote requires optionId/choiceId.");
-            return client.polls.vote(pollMessageId, optionId, { clientMessageId: clientMessageId(ctx, pollMessageId) });
+            return client.polls.vote(pollGuid, optionId, { clientMessageId: clientMessageId(ctx, pollGuid) });
           }
-          return client.polls.unvote(pollMessageId, { clientMessageId: clientMessageId(ctx, pollMessageId) });
+          return client.polls.unvote(pollGuid, { clientMessageId: clientMessageId(ctx, pollGuid) });
         });
         return actionResult(action, {
           pollMessageId: pollState.pollMessageGuid,
